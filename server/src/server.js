@@ -92,6 +92,18 @@ app.use('/api/', limiter);
 // Serve static uploads
 app.use('/uploads', express.static(path.resolve('public/uploads')));
 
+// Root endpoint
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    name: 'Nehir Çanta Turkish Fashion E-commerce API',
+    status: 'online',
+    version: '1.0.0',
+    documentation: '/api/health',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.status(200).json({
