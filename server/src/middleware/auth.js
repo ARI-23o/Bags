@@ -1,6 +1,5 @@
 import jwt from 'jsonwebtoken';
-import Admin from '../models/Admin.js';
-import User from '../models/User.js';
+import { query } from '../config/db.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'nehir_canta_secret_key_2026';
 
@@ -9,8 +8,8 @@ export const protectAdmin = async (req, res, next) => {
   try {
     let token = null;
 
-    if (req.cookies && req.cookies.adminToken) {
-      token = req.cookies.adminToken;
+    if (req.cookies && (req.cookies.token || req.cookies.adminToken)) {
+      token = req.cookies.token || req.cookies.adminToken;
     } else if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
       token = req.headers.authorization.split(' ')[1];
     }
@@ -23,16 +22,24 @@ export const protectAdmin = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    const admin = await Admin.findById(decoded.id);
+    const result = await query('SELECT * FROM admins WHERE id = $1', [decoded.id]);
 
-    if (!admin || !admin.isActive) {
+    if (result.rows.length === 0 || !result.rows[0].is_active) {
       return res.status(401).json({
         success: false,
         message: 'Yetkisiz erişim: Yönetici hesabı bulunamadı veya pasif.'
       });
     }
 
-    req.admin = admin;
+    const admin = result.rows[0];
+    req.admin = {
+      _id: String(admin.id),
+      id: admin.id,
+      name: admin.name,
+      email: admin.email,
+      role: admin.role
+    };
+    req.user = req.admin;
     next();
   } catch (error) {
     return res.status(401).json({
@@ -74,16 +81,22 @@ export const protectUser = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await User.findById(decoded.id);
+    const result = await query('SELECT * FROM users WHERE id = $1', [decoded.id]);
 
-    if (!user || !user.isActive) {
+    if (result.rows.length === 0) {
       return res.status(401).json({
         success: false,
-        message: 'Kullanıcı hesabı bulunamadı veya pasif durumda.'
+        message: 'Kullanıcı hesabı bulunamadı.'
       });
     }
 
-    req.user = user;
+    const user = result.rows[0];
+    req.user = {
+      _id: String(user.id),
+      id: user.id,
+      name: user.name,
+      email: user.email
+    };
     next();
   } catch (error) {
     return res.status(401).json({

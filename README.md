@@ -53,7 +53,7 @@
 | **İkonlar** | Lucide React | Modern ve temiz ikon seti |
 | **Routing & SEO** | React Router v6 + React Helmet Async | Türkçe URL rotaları, OpenGraph ve JSON-LD şemaları |
 | **Backend** | Node.js + Express (ES Modules) | RESTful API mimarisi |
-| **Veritabanı** | MongoDB + Mongoose | Esnek ve ölçeklenebilir doküman modeli |
+| **Veritabanı** | PostgreSQL 18 (`pg` pool + relational schema) | Güçlü ilişkisel ve JSONB destekli veritabanı |
 | **Güvenlik** | Helmet, CORS, Rate-Limit, bcrypt, JWT | Üretim düzeyinde API güvenliği |
 | **Medya** | Multer & Cloudinary entegrasyonu | Optimize görsel yönetimi |
 | **Test** | Vitest | Kapsamlı birim ve entegrasyon testleri |

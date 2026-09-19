@@ -1,140 +1,138 @@
-import Category from '../models/Category.js';
-import Product from '../models/Product.js';
-import { slugifyTurkish } from '../utils/slugify.js';
-import { logAudit } from '../middleware/auditLogger.js';
+import { query } from '../config/db.js';
+import { slugify } from '../utils/slugify.js';
+import { formatCategory } from '../utils/dbHelpers.js';
 
-// @desc    Get all active categories
-// @route   GET /api/categories
-// @access  Public
 export const getCategories = async (req, res, next) => {
   try {
-    const categories = await Category.find({ isActive: true }).sort({ order: 1, name: 1 });
+    const { includeInactive } = req.query;
+    let sql = `
+      SELECT c.*, COUNT(p.id) as product_count
+      FROM categories c
+      LEFT JOIN products p ON p.category_id = c.id AND p.status = 'active'
+    `;
+    const params = [];
 
-    // Attach product count to each category
-    const categoriesWithCount = await Promise.all(
-      categories.map(async (cat) => {
-        const count = await Product.countDocuments({ category: cat._id, status: 'active' });
-        return {
-          ...cat.toObject(),
-          productCount: count
-        };
-      })
-    );
-
-    res.status(200).json({
-      success: true,
-      categories: categoriesWithCount
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Get category by slug
-// @route   GET /api/categories/:slug
-// @access  Public
-export const getCategoryBySlug = async (req, res, next) => {
-  try {
-    const category = await Category.findOne({ slug: req.params.slug });
-    if (!category) {
-      return res.status(404).json({ success: false, message: 'Kategori bulunamadı.' });
+    if (includeInactive !== 'true') {
+      sql += ' WHERE c.is_active = TRUE';
     }
 
-    const count = await Product.countDocuments({ category: category._id, status: 'active' });
+    sql += ' GROUP BY c.id ORDER BY c.order_index ASC, c.name ASC';
 
-    res.status(200).json({
-      success: true,
-      category: {
-        ...category.toObject(),
-        productCount: count
-      }
-    });
+    const result = await query(sql, params);
+    const categories = result.rows.map(formatCategory);
+
+    res.json({ success: true, categories });
   } catch (error) {
     next(error);
   }
 };
 
-// ================= ADMIN CATEGORY CONTROLLERS =================
-
-// @desc    Admin: Get all categories (including inactive)
-// @route   GET /api/categories/admin/all
-// @access  Private (Admin)
 export const getAdminCategories = async (req, res, next) => {
   try {
-    const categories = await Category.find().sort({ order: 1, createdAt: -1 });
-    res.status(200).json({ success: true, categories });
+    const sql = `
+      SELECT c.*, COUNT(p.id) as product_count
+      FROM categories c
+      LEFT JOIN products p ON p.category_id = c.id
+      GROUP BY c.id
+      ORDER BY c.order_index ASC, c.name ASC
+    `;
+    const result = await query(sql);
+    const categories = result.rows.map(formatCategory);
+    res.json({ success: true, categories });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Create category
-// @route   POST /api/categories
-// @access  Private (Admin)
+export const getCategoryBySlug = async (req, res, next) => {
+  try {
+    const { slug } = req.params;
+    const result = await query(
+      `SELECT c.*, COUNT(p.id) as product_count
+       FROM categories c
+       LEFT JOIN products p ON p.category_id = c.id AND p.status = 'active'
+       WHERE c.slug = $1
+       GROUP BY c.id`,
+      [slug]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Kategori bulunamadı.' });
+    }
+
+    res.json({ success: true, category: formatCategory(result.rows[0]) });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const createCategory = async (req, res, next) => {
   try {
-    const data = { ...req.body };
-    if (!data.slug && data.name) {
-      data.slug = slugifyTurkish(data.name);
+    const { name, description, image, order, isActive } = req.body;
+    let baseSlug = slugify(name);
+    let finalSlug = baseSlug;
+
+    const existing = await query('SELECT id FROM categories WHERE slug = $1', [finalSlug]);
+    if (existing.rows.length > 0) {
+      finalSlug = `${baseSlug}-${Date.now()}`;
     }
 
-    const category = await Category.create(data);
-    await logAudit(req, 'CREATE_CATEGORY', 'Category', category._id, { name: category.name });
+    const insertRes = await query(
+      `INSERT INTO categories (name, slug, description, image, order_index, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [name, finalSlug, description || '', image || '', order || 0, isActive !== false]
+    );
 
-    res.status(201).json({
-      success: true,
-      message: 'Kategori başarıyla oluşturuldu.',
-      category
-    });
+    res.status(201).json({ success: true, category: formatCategory(insertRes.rows[0]) });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Update category
-// @route   PUT /api/categories/:id
-// @access  Private (Admin)
 export const updateCategory = async (req, res, next) => {
   try {
-    const data = { ...req.body };
-    if (data.name && !data.slug) {
-      data.slug = slugifyTurkish(data.name);
-    }
+    const { id } = req.params;
+    const { name, description, image, order, isActive } = req.body;
 
-    const category = await Category.findByIdAndUpdate(req.params.id, data, {
-      new: true,
-      runValidators: true
-    });
-
-    if (!category) {
+    const currentRes = await query('SELECT * FROM categories WHERE id = $1', [id]);
+    if (currentRes.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Kategori bulunamadı.' });
     }
 
-    await logAudit(req, 'UPDATE_CATEGORY', 'Category', category._id, { name: category.name });
+    let slug = currentRes.rows[0].slug;
+    if (name && name !== currentRes.rows[0].name) {
+      slug = slugify(name);
+    }
 
-    res.status(200).json({
-      success: true,
-      message: 'Kategori başarıyla güncellendi.',
-      category
-    });
+    const updateRes = await query(
+      `UPDATE categories
+       SET name = COALESCE($1, name),
+           slug = $2,
+           description = COALESCE($3, description),
+           image = COALESCE($4, image),
+           order_index = COALESCE($5, order_index),
+           is_active = COALESCE($6, is_active),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $7
+       RETURNING *`,
+      [name, slug, description, image, order, isActive, id]
+    );
+
+    res.json({ success: true, category: formatCategory(updateRes.rows[0]) });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Delete category
-// @route   DELETE /api/categories/:id
-// @access  Private (Admin)
 export const deleteCategory = async (req, res, next) => {
   try {
-    const category = await Category.findByIdAndDelete(req.params.id);
-    if (!category) {
+    const { id } = req.params;
+    const result = await query('DELETE FROM categories WHERE id = $1 RETURNING id', [id]);
+    if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Kategori bulunamadı.' });
     }
-
-    await logAudit(req, 'DELETE_CATEGORY', 'Category', req.params.id, { name: category.name });
-
-    res.status(200).json({ success: true, message: 'Kategori başarıyla silindi.' });
+    res.json({ success: true, message: 'Kategori başarıyla silindi.' });
   } catch (error) {
     next(error);
   }

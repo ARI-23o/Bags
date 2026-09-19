@@ -1,342 +1,246 @@
-import Order from '../models/Order.js';
-import Product from '../models/Product.js';
-import Coupon from '../models/Coupon.js';
-import SiteSettings from '../models/SiteSettings.js';
-import { logAudit } from '../middleware/auditLogger.js';
+import { query } from '../config/db.js';
+import { formatOrder } from '../utils/dbHelpers.js';
 
-// Helper to generate unique order number
-const generateOrderNumber = () => {
-  const date = new Date();
-  const year = date.getFullYear();
-  const random = Math.floor(100000 + Math.random() * 900000);
-  return `NC-${year}-${random}`;
+export const getAdminOrders = async (req, res, next) => {
+  try {
+    const { status, paymentStatus, search, page = 1, limit = 20 } = req.query;
+    const conditions = [];
+    const params = [];
+    let paramIndex = 1;
+
+    if (status && status !== 'all') {
+      conditions.push(`order_status = $${paramIndex++}`);
+      params.push(status);
+    }
+
+    if (paymentStatus && paymentStatus !== 'all') {
+      conditions.push(`payment_status = $${paramIndex++}`);
+      params.push(paymentStatus);
+    }
+
+    if (search) {
+      conditions.push(`(order_number ILIKE $${paramIndex} OR customer->>'email' ILIKE $${paramIndex} OR customer->>'firstName' ILIKE $${paramIndex} OR customer->>'lastName' ILIKE $${paramIndex} OR customer->>'phone' ILIKE $${paramIndex})`);
+      params.push(`%${search.trim()}%`);
+      paramIndex++;
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const countRes = await query(`SELECT COUNT(id) as total FROM orders ${whereClause}`, params);
+    const total = parseInt(countRes.rows[0]?.total || '0', 10);
+
+    const offset = (Math.max(1, parseInt(page, 10)) - 1) * parseInt(limit, 10);
+    const sql = `
+      SELECT * FROM orders
+      ${whereClause}
+      ORDER BY created_at DESC
+      LIMIT $${paramIndex++} OFFSET $${paramIndex++}
+    `;
+
+    const dataRes = await query(sql, [...params, parseInt(limit, 10), offset]);
+    const orders = dataRes.rows.map(formatOrder);
+
+    res.json({
+      success: true,
+      orders,
+      total,
+      page: parseInt(page, 10),
+      pages: Math.ceil(total / parseInt(limit, 10))
+    });
+  } catch (error) {
+    next(error);
+  }
 };
 
-// @desc    Create new customer order
-// @route   POST /api/orders
-// @access  Public
+export const getOrders = getAdminOrders;
+
+export const getAdminOrderById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const sql = isNaN(id)
+      ? 'SELECT * FROM orders WHERE order_number = $1'
+      : 'SELECT * FROM orders WHERE id = $1 OR order_number = $1';
+
+    const result = await query(sql, [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Sipariş bulunamadı.' });
+    }
+
+    res.json({ success: true, order: formatOrder(result.rows[0]) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getOrderById = getAdminOrderById;
+
+export const trackOrder = async (req, res, next) => {
+  try {
+    const data = { ...req.query, ...req.body };
+    const orderNumber = data.orderNumber;
+    const contact = data.contact || data.email || data.phone;
+
+    if (!orderNumber || !contact) {
+      return res.status(400).json({ success: false, message: 'Sipariş numarası ve iletişim bilgisi (e-posta veya telefon) zorunludur.' });
+    }
+
+    const cleanContact = contact.trim().toLowerCase();
+
+    const result = await query(
+      `SELECT * FROM orders
+       WHERE UPPER(order_number) = UPPER($1) AND (
+         LOWER(customer->>'email') = $2 OR
+         LOWER(customer->>'phone') = $2 OR
+         REPLACE(customer->>'phone', ' ', '') = REPLACE($2, ' ', '')
+       )`,
+      [orderNumber.trim(), cleanContact]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Belirtilen bilgilerle eşleşen sipariş bulunamadı.' });
+    }
+
+    res.json({ success: true, order: formatOrder(result.rows[0]) });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const createOrder = async (req, res, next) => {
   try {
     const {
       customer,
       shippingAddress,
       items,
+      subtotal,
+      shippingFee,
+      discountAmount,
       couponCode,
+      total,
       paymentMethod,
       notes
     } = req.body;
 
-    if (!customer || !shippingAddress || !items || !items.length || !paymentMethod) {
-      return res.status(400).json({
-        success: false,
-        message: 'Lütfen sipariş için gerekli tüm bilgileri eksiksiz doldurunuz.'
-      });
-    }
+    const orderNumber = `NC-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 90 + 10)}`;
 
-    // Verify products and calculate exact subtotal
-    let calculatedSubtotal = 0;
-    const verifiedItems = [];
+    const insertSql = `
+      INSERT INTO orders (
+        order_number, customer, shipping_address, items, subtotal, shipping_fee,
+        discount_amount, coupon_code, total, payment_method, notes
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      RETURNING *
+    `;
 
-    for (const item of items) {
-      const product = await Product.findById(item.productId || item.product);
-      if (!product || product.status !== 'active') {
-        return res.status(400).json({
-          success: false,
-          message: `"${item.title || 'Ürün'}" artık satışta bulunmamaktadır.`
-        });
-      }
+    const insertRes = await query(insertSql, [
+      orderNumber,
+      JSON.stringify(customer),
+      JSON.stringify(shippingAddress),
+      JSON.stringify(items),
+      parseFloat(subtotal),
+      parseFloat(shippingFee || 0),
+      parseFloat(discountAmount || 0),
+      couponCode || null,
+      parseFloat(total),
+      paymentMethod || 'havale_eft',
+      notes || ''
+    ]);
 
-      if (product.stock < item.quantity) {
-        return res.status(400).json({
-          success: false,
-          message: `"${product.title}" için yeterli stok bulunmuyor. (Mevcut stok: ${product.stock})`
-        });
-      }
-
-      const itemTotal = product.price * item.quantity;
-      calculatedSubtotal += itemTotal;
-
-      verifiedItems.push({
-        product: product._id,
-        title: product.title,
-        sku: product.sku,
-        color: item.color || { name: '', hexCode: '' },
-        price: product.price,
-        quantity: item.quantity,
-        image: item.image || product.primaryImage,
-        totalPrice: itemTotal
-      });
-    }
-
-    // Calculate shipping fee from site settings
-    const settings = await SiteSettings.findOne();
-    let shippingFee = 0;
-    if (settings && settings.shippingSettings) {
-      const { standardRate, freeShippingThreshold, isFreeShippingEnabled } = settings.shippingSettings;
-      if (isFreeShippingEnabled && calculatedSubtotal >= freeShippingThreshold) {
-        shippingFee = 0;
-      } else {
-        shippingFee = standardRate || 0;
-      }
-    }
-
-    // Additional cash on delivery fee if applicable
-    if (paymentMethod === 'kapida_odeme' && settings?.paymentMethods?.kapidaOdemeFee) {
-      shippingFee += settings.paymentMethods.kapidaOdemeFee;
-    }
-
-    // Calculate coupon discount
-    let discountAmount = 0;
-    let appliedCoupon = null;
-
-    if (couponCode) {
-      const coupon = await Coupon.findOne({
-        code: couponCode.toUpperCase().trim(),
-        isActive: true
-      });
-
-      if (coupon) {
-        const now = new Date();
-        const isNotExpired = !coupon.expiresAt || new Date(coupon.expiresAt) > now;
-        const isUnderLimit = !coupon.maxUses || coupon.usedCount < coupon.maxUses;
-        const meetsMinAmount = calculatedSubtotal >= (coupon.minOrderAmount || 0);
-
-        if (isNotExpired && isUnderLimit && meetsMinAmount) {
-          if (coupon.discountType === 'percent') {
-            discountAmount = (calculatedSubtotal * coupon.discountValue) / 100;
-            if (coupon.maxDiscountAmount && discountAmount > coupon.maxDiscountAmount) {
-              discountAmount = coupon.maxDiscountAmount;
-            }
-          } else {
-            discountAmount = Math.min(coupon.discountValue, calculatedSubtotal);
-          }
-
-          appliedCoupon = coupon;
+    // Update stock for purchased products
+    if (Array.isArray(items)) {
+      for (const item of items) {
+        if (item.product && !isNaN(item.product)) {
+          await query('UPDATE products SET stock = GREATEST(0, stock - $1) WHERE id = $2', [item.quantity || 1, parseInt(item.product, 10)]);
         }
       }
     }
 
-    const total = Math.max(0, calculatedSubtotal + shippingFee - discountAmount);
-    const orderNumber = generateOrderNumber();
-
-    const order = await Order.create({
-      orderNumber,
-      customer,
-      shippingAddress,
-      items: verifiedItems,
-      subtotal: calculatedSubtotal,
-      shippingFee,
-      discountAmount,
-      couponCode: appliedCoupon ? appliedCoupon.code : null,
-      total,
-      paymentMethod,
-      notes: notes || ''
-    });
-
-    // Deduct stock for ordered items
-    for (const item of items) {
-      await Product.findByIdAndUpdate(item.productId || item.product, {
-        $inc: { stock: -item.quantity }
-      });
-    }
-
-    // Increment coupon used count if used
-    if (appliedCoupon) {
-      appliedCoupon.usedCount += 1;
-      await appliedCoupon.save();
-    }
-
-    res.status(201).json({
-      success: true,
-      message: 'Siparişiniz başarıyla alındı.',
-      order
-    });
+    res.status(201).json({ success: true, order: formatOrder(insertRes.rows[0]) });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Track order by orderNumber and email or phone
-// @route   GET /api/orders/track
-// @access  Public
-export const trackOrder = async (req, res, next) => {
-  try {
-    const { orderNumber, contact } = req.query;
-
-    if (!orderNumber || !contact) {
-      return res.status(400).json({
-        success: false,
-        message: 'Lütfen sipariş numarası ve telefon/e-posta bilginizi giriniz.'
-      });
-    }
-
-    const trimmedOrder = orderNumber.toUpperCase().trim();
-    const trimmedContact = contact.toLowerCase().trim();
-
-    const order = await Order.findOne({
-      orderNumber: trimmedOrder,
-      $or: [
-        { 'customer.email': trimmedContact },
-        { 'customer.phone': new RegExp(trimmedContact.replace(/\D/g, ''), 'i') }
-      ]
-    });
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Belirtilen bilgilerle eşleşen bir sipariş bulunamadı.'
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      order
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// ================= ADMIN ORDER CONTROLLERS =================
-
-// @desc    Admin: Get all orders with status filter & pagination
-// @route   GET /api/orders/admin/all
-// @access  Private (Admin)
-export const getAdminOrders = async (req, res, next) => {
-  try {
-    const { page = 1, limit = 20, status, search } = req.query;
-    const query = {};
-
-    if (status && status !== 'all') {
-      query.orderStatus = status;
-    }
-
-    if (search && search.trim()) {
-      const regex = new RegExp(search.trim(), 'i');
-      query.$or = [
-        { orderNumber: regex },
-        { 'customer.firstName': regex },
-        { 'customer.lastName': regex },
-        { 'customer.email': regex },
-        { 'customer.phone': regex }
-      ];
-    }
-
-    const skip = (Number(page) - 1) * Number(limit);
-    const total = await Order.countDocuments(query);
-    const orders = await Order.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(Number(limit));
-
-    res.status(200).json({
-      success: true,
-      count: orders.length,
-      total,
-      totalPages: Math.ceil(total / Number(limit)),
-      currentPage: Number(page),
-      orders
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Admin: Get order details
-// @route   GET /api/orders/admin/:id
-// @access  Private (Admin)
-export const getAdminOrderById = async (req, res, next) => {
-  try {
-    const order = await Order.findById(req.params.id);
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Sipariş bulunamadı.' });
-    }
-    res.status(200).json({ success: true, order });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Admin: Update order status / tracking
-// @route   PUT /api/orders/admin/:id
-// @access  Private (Admin)
 export const updateAdminOrderStatus = async (req, res, next) => {
   try {
+    const { id } = req.params;
     const { orderStatus, paymentStatus, trackingNumber, trackingCarrier, adminNotes } = req.body;
 
-    const order = await Order.findById(req.params.id);
-    if (!order) {
+    const updateSql = `
+      UPDATE orders
+      SET order_status = COALESCE($1, order_status),
+          payment_status = COALESCE($2, payment_status),
+          tracking_number = COALESCE($3, tracking_number),
+          tracking_carrier = COALESCE($4, tracking_carrier),
+          admin_notes = COALESCE($5, admin_notes),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $6
+      RETURNING *
+    `;
+
+    const updateRes = await query(updateSql, [
+      orderStatus,
+      paymentStatus,
+      trackingNumber,
+      trackingCarrier,
+      adminNotes,
+      id
+    ]);
+
+    if (updateRes.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Sipariş bulunamadı.' });
     }
 
-    if (orderStatus) order.orderStatus = orderStatus;
-    if (paymentStatus) order.paymentStatus = paymentStatus;
-    if (trackingNumber !== undefined) order.trackingNumber = trackingNumber;
-    if (trackingCarrier !== undefined) order.trackingCarrier = trackingCarrier;
-    if (adminNotes !== undefined) order.adminNotes = adminNotes;
-
-    await order.save();
-
-    await logAudit(req, 'UPDATE_ORDER_STATUS', 'Order', order._id, {
-      orderNumber: order.orderNumber,
-      orderStatus: order.orderStatus,
-      paymentStatus: order.paymentStatus,
-      trackingNumber: order.trackingNumber
-    });
-
-    res.status(200).json({
-      success: true,
-      message: 'Sipariş durumu başarıyla güncellendi.',
-      order
-    });
+    res.json({ success: true, order: formatOrder(updateRes.rows[0]) });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Get dashboard statistics
-// @route   GET /api/orders/admin/stats
-// @access  Private (Admin)
+export const updateOrderStatus = updateAdminOrderStatus;
+
 export const getAdminDashboardStats = async (req, res, next) => {
   try {
-    const totalOrders = await Order.countDocuments();
-    const pendingOrders = await Order.countDocuments({ orderStatus: 'pending' });
-    const processingOrders = await Order.countDocuments({ orderStatus: { $in: ['confirmed', 'processing'] } });
-    const shippedOrders = await Order.countDocuments({ orderStatus: 'shipped' });
-    const deliveredOrders = await Order.countDocuments({ orderStatus: 'delivered' });
+    const ordersRes = await query(`
+      SELECT
+        COUNT(id) as total_orders,
+        COALESCE(SUM(CASE WHEN payment_status = 'paid' OR order_status = 'delivered' THEN total ELSE 0 END), 0) as total_revenue,
+        COUNT(CASE WHEN order_status = 'pending' THEN 1 END) as pending_orders,
+        COUNT(CASE WHEN order_status = 'processing' THEN 1 END) as processing_orders
+      FROM orders
+    `);
 
-    // Revenue calculation
-    const revenueAgg = await Order.aggregate([
-      { $match: { orderStatus: { $ne: 'cancelled' } } },
-      { $group: { _id: null, totalRevenue: { $sum: '$total' } } }
-    ]);
-    const totalRevenue = revenueAgg[0]?.totalRevenue || 0;
+    const productsRes = await query(`
+      SELECT
+        COUNT(id) as total_products,
+        COUNT(CASE WHEN stock <= 5 THEN 1 END) as low_stock_count
+      FROM products
+      WHERE status = 'active'
+    `);
 
-    // Total products & low stock
-    const totalProducts = await Product.countDocuments({ status: 'active' });
-    const lowStockProducts = await Product.find({ status: 'active', stock: { $lte: 3 } })
-      .select('title sku stock price primaryImage')
-      .limit(6);
+    const wholesaleRes = await query(`
+      SELECT COUNT(id) as pending_wholesale
+      FROM wholesale_enquiries
+      WHERE status = 'pending'
+    `);
 
-    // Recent 5 orders
-    const recentOrders = await Order.find()
-      .sort({ createdAt: -1 })
-      .limit(5);
+    const recentOrdersRes = await query(`
+      SELECT * FROM orders
+      ORDER BY created_at DESC
+      LIMIT 5
+    `);
 
-    res.status(200).json({
+    res.json({
       success: true,
       stats: {
-        totalOrders,
-        pendingOrders,
-        processingOrders,
-        shippedOrders,
-        deliveredOrders,
-        totalRevenue,
-        totalProducts,
-        lowStockCount: lowStockProducts.length
+        totalOrders: parseInt(ordersRes.rows[0]?.total_orders || '0', 10),
+        totalRevenue: parseFloat(ordersRes.rows[0]?.total_revenue || '0'),
+        pendingOrders: parseInt(ordersRes.rows[0]?.pending_orders || '0', 10),
+        processingOrders: parseInt(ordersRes.rows[0]?.processing_orders || '0', 10),
+        totalProducts: parseInt(productsRes.rows[0]?.total_products || '0', 10),
+        lowStockCount: parseInt(productsRes.rows[0]?.low_stock_count || '0', 10),
+        pendingWholesale: parseInt(wholesaleRes.rows[0]?.pending_wholesale || '0', 10)
       },
-      lowStockProducts,
-      recentOrders
+      recentOrders: recentOrdersRes.rows.map(formatOrder)
     });
   } catch (error) {
     next(error);

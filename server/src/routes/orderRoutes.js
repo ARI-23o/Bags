@@ -14,6 +14,7 @@ const router = express.Router();
 // Public
 router.post('/', createOrder);
 router.get('/track', trackOrder);
+router.post('/track', trackOrder);
 
 // Admin
 router.get('/admin/stats', protectAdmin, getAdminDashboardStats);

@@ -1,89 +1,97 @@
-import InstagramPost from '../models/InstagramPost.js';
-import { logAudit } from '../middleware/auditLogger.js';
+import { query } from '../config/db.js';
+import { formatInstagramPost } from '../utils/dbHelpers.js';
 
-// @desc    Get active Instagram posts
-// @route   GET /api/instagram
-// @access  Public
+export const getInstagramPosts = async (req, res, next) => {
+  try {
+    const { includeInactive } = req.query;
+    let sql = 'SELECT * FROM instagram_posts';
+    if (includeInactive !== 'true') {
+      sql += ' WHERE is_active = TRUE';
+    }
+    sql += ' ORDER BY order_index ASC, id ASC';
+
+    const result = await query(sql);
+    const posts = result.rows.map(formatInstagramPost);
+
+    res.json({ success: true, posts });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getActiveInstagramPosts = async (req, res, next) => {
   try {
-    const posts = await InstagramPost.find({ isActive: true }).sort({ order: 1 });
-    res.status(200).json({ success: true, posts });
+    const result = await query('SELECT * FROM instagram_posts WHERE is_active = TRUE ORDER BY order_index ASC, id ASC');
+    const posts = result.rows.map(formatInstagramPost);
+    res.json({ success: true, posts });
   } catch (error) {
     next(error);
   }
 };
 
-// ================= ADMIN INSTAGRAM CONTROLLERS =================
-
-// @desc    Admin: Get all Instagram posts
-// @route   GET /api/instagram/admin/all
-// @access  Private (Admin)
 export const getAdminInstagramPosts = async (req, res, next) => {
   try {
-    const posts = await InstagramPost.find().sort({ order: 1 });
-    res.status(200).json({ success: true, posts });
+    const result = await query('SELECT * FROM instagram_posts ORDER BY order_index ASC, id ASC');
+    const posts = result.rows.map(formatInstagramPost);
+    res.json({ success: true, posts });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Create post
-// @route   POST /api/instagram
-// @access  Private (Admin)
 export const createInstagramPost = async (req, res, next) => {
   try {
-    const post = await InstagramPost.create(req.body);
-    await logAudit(req, 'CREATE_INSTAGRAM_POST', 'InstagramPost', post._id, { caption: post.caption });
+    const { caption, mediaUrl, permalink, likeCount, order, isActive } = req.body;
 
-    res.status(201).json({
-      success: true,
-      message: 'Instagram gönderisi eklendi.',
-      post
-    });
+    const result = await query(
+      `INSERT INTO instagram_posts (caption, media_url, permalink, like_count, order_index, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [caption || '', mediaUrl, permalink || 'https://www.instagram.com/nehircanta2016/', likeCount || 0, order || 0, isActive !== false]
+    );
+
+    res.status(201).json({ success: true, post: formatInstagramPost(result.rows[0]) });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Update post
-// @route   PUT /api/instagram/:id
-// @access  Private (Admin)
 export const updateInstagramPost = async (req, res, next) => {
   try {
-    const post = await InstagramPost.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true
-    });
+    const { id } = req.params;
+    const { caption, mediaUrl, permalink, likeCount, order, isActive } = req.body;
 
-    if (!post) {
-      return res.status(404).json({ success: false, message: 'Gönderi bulunamadı.' });
+    const result = await query(
+      `UPDATE instagram_posts
+       SET caption = COALESCE($1, caption),
+           media_url = COALESCE($2, media_url),
+           permalink = COALESCE($3, permalink),
+           like_count = COALESCE($4, like_count),
+           order_index = COALESCE($5, order_index),
+           is_active = COALESCE($6, is_active)
+       WHERE id = $7
+       RETURNING *`,
+      [caption, mediaUrl, permalink, likeCount, order, isActive, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Instagram gönderisi bulunamadı.' });
     }
 
-    await logAudit(req, 'UPDATE_INSTAGRAM_POST', 'InstagramPost', post._id, { caption: post.caption });
-
-    res.status(200).json({
-      success: true,
-      message: 'Instagram gönderisi güncellendi.',
-      post
-    });
+    res.json({ success: true, post: formatInstagramPost(result.rows[0]) });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Delete post
-// @route   DELETE /api/instagram/:id
-// @access  Private (Admin)
 export const deleteInstagramPost = async (req, res, next) => {
   try {
-    const post = await InstagramPost.findByIdAndDelete(req.params.id);
-    if (!post) {
+    const { id } = req.params;
+    const result = await query('DELETE FROM instagram_posts WHERE id = $1 RETURNING id', [id]);
+    if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Gönderi bulunamadı.' });
     }
-
-    await logAudit(req, 'DELETE_INSTAGRAM_POST', 'InstagramPost', req.params.id, {});
-
-    res.status(200).json({ success: true, message: 'Instagram gönderisi silindi.' });
+    res.json({ success: true, message: 'Gönderi başarıyla silindi.' });
   } catch (error) {
     next(error);
   }

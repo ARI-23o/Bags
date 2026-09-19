@@ -29,3 +29,5 @@ export const slugifyTurkish = (text) => {
     .replace(/^-+/, '')       // trim hyphens from start
     .replace(/-+$/, '');      // trim hyphens from end
 };
+
+export const slugify = slugifyTurkish;

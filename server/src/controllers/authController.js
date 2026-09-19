@@ -1,74 +1,61 @@
-import Admin from '../models/Admin.js';
-import User from '../models/User.js';
+import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { logAudit } from '../middleware/auditLogger.js';
+import { query } from '../config/db.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'nehir_canta_secret_key_2026';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 
-const generateToken = (id, role) => {
-  return jwt.sign({ id, role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-};
-
-// ================= ADMIN AUTH =================
-
-// @desc    Admin Login
-// @route   POST /api/auth/admin/login
-// @access  Public
+// Admin Login
 export const adminLogin = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Lütfen e-posta ve şifrenizi giriniz.'
-      });
+      return res.status(400).json({ success: false, message: 'Lütfen e-posta ve şifrenizi giriniz.' });
     }
 
-    const admin = await Admin.findOne({ email: email.toLowerCase().trim() }).select('+password');
-
-    if (!admin || !admin.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: 'Geçersiz e-posta veya şifre.'
-      });
+    const adminRes = await query('SELECT * FROM admins WHERE email = $1 AND is_active = TRUE', [email.toLowerCase().trim()]);
+    if (adminRes.rows.length === 0) {
+      return res.status(401).json({ success: false, message: 'Geçersiz e-posta veya şifre.' });
     }
 
-    const isMatch = await admin.comparePassword(password);
+    const admin = adminRes.rows[0];
+    const isMatch = await bcrypt.compare(password, admin.password);
     if (!isMatch) {
-      return res.status(401).json({
-        success: false,
-        message: 'Geçersiz e-posta veya şifre.'
-      });
+      return res.status(401).json({ success: false, message: 'Geçersiz e-posta veya şifre.' });
     }
 
     // Update last login
-    admin.lastLogin = new Date();
-    await admin.save();
+    await query('UPDATE admins SET last_login = CURRENT_TIMESTAMP WHERE id = $1', [admin.id]);
 
-    const token = generateToken(admin._id, admin.role);
+    const token = jwt.sign(
+      { id: admin.id, email: admin.email, role: admin.role, name: admin.name },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
 
-    // Set secure cookie
     res.cookie('adminToken', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      sameSite: 'lax'
     });
 
-    await logAudit(req, 'ADMIN_LOGIN', 'Admin', admin._id, { email: admin.email });
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      sameSite: 'lax'
+    });
 
-    res.status(200).json({
+    res.json({
       success: true,
-      message: 'Giriş başarılı.',
       token,
       admin: {
-        id: admin._id,
+        id: admin.id,
+        _id: String(admin.id),
         name: admin.name,
         email: admin.email,
-        role: admin.role,
-        lastLogin: admin.lastLogin
+        role: admin.role
       }
     });
   } catch (error) {
@@ -76,19 +63,24 @@ export const adminLogin = async (req, res, next) => {
   }
 };
 
-// @desc    Get Current Admin Profile
-// @route   GET /api/auth/admin/me
-// @access  Private (Admin)
+export const adminLogout = async (req, res) => {
+  res.clearCookie('token');
+  res.clearCookie('adminToken');
+  res.json({ success: true, message: 'Çıkış yapıldı.' });
+};
+
 export const getAdminProfile = async (req, res, next) => {
   try {
-    res.status(200).json({
+    const adminRes = await query('SELECT id, name, email, role, is_active, last_login, created_at FROM admins WHERE id = $1', [req.admin.id]);
+    if (adminRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Yönetici bulunamadı.' });
+    }
+    const admin = adminRes.rows[0];
+    res.json({
       success: true,
       admin: {
-        id: req.admin._id,
-        name: req.admin.name,
-        email: req.admin.email,
-        role: req.admin.role,
-        lastLogin: req.admin.lastLogin
+        ...admin,
+        _id: String(admin.id)
       }
     });
   } catch (error) {
@@ -96,66 +88,47 @@ export const getAdminProfile = async (req, res, next) => {
   }
 };
 
-// @desc    Admin Logout
-// @route   POST /api/auth/admin/logout
-// @access  Public
-export const adminLogout = async (req, res) => {
-  res.cookie('adminToken', '', {
-    httpOnly: true,
-    expires: new Date(0)
-  });
-  res.status(200).json({ success: true, message: 'Çıkış yapıldı.' });
-};
-
-// ================= CUSTOMER AUTH =================
-
-// @desc    Customer Register
-// @route   POST /api/auth/register
-// @access  Public
+// Customer User Auth
 export const registerUser = async (req, res, next) => {
   try {
-    const { firstName, lastName, email, password, phone } = req.body;
+    const { name, email, password, phone } = req.body;
 
-    if (!firstName || !lastName || !email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Lütfen tüm zorunlu alanları doldurunuz.'
-      });
+    if (!name || !email || !password) {
+      return res.status(400).json({ success: false, message: 'Lütfen tüm zorunlu alanları doldurunuz.' });
     }
 
-    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: 'Bu e-posta adresi ile kayıtlı bir hesap zaten mevcut.'
-      });
+    const existing = await query('SELECT id FROM users WHERE email = $1', [email.toLowerCase().trim()]);
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ success: false, message: 'Bu e-posta adresi ile kayıtlı bir hesap bulunmaktadır.' });
     }
 
-    const user = await User.create({
-      firstName,
-      lastName,
-      email: email.toLowerCase().trim(),
-      password,
-      phone: phone || ''
-    });
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
 
-    const token = generateToken(user._id, user.role);
+    const insertRes = await query(
+      `INSERT INTO users (name, email, password, phone)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, email, phone, created_at`,
+      [name, email.toLowerCase().trim(), hashedPassword, phone || '']
+    );
+
+    const user = insertRes.rows[0];
+    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
 
     res.cookie('userToken', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      sameSite: 'lax'
     });
 
     res.status(201).json({
       success: true,
-      message: 'Kayıt başarıyla oluşturuldu.',
       token,
       user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
+        _id: String(user.id),
+        id: user.id,
+        name: user.name,
         email: user.email,
         phone: user.phone
       }
@@ -165,54 +138,41 @@ export const registerUser = async (req, res, next) => {
   }
 };
 
-// @desc    Customer Login
-// @route   POST /api/auth/login
-// @access  Public
 export const loginUser = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Lütfen e-posta ve şifrenizi giriniz.'
-      });
+      return res.status(400).json({ success: false, message: 'E-posta ve şifre gereklidir.' });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase().trim() }).select('+password');
-
-    if (!user || !user.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: 'Geçersiz e-posta veya şifre.'
-      });
+    const userRes = await query('SELECT * FROM users WHERE email = $1', [email.toLowerCase().trim()]);
+    if (userRes.rows.length === 0) {
+      return res.status(401).json({ success: false, message: 'Geçersiz e-posta veya şifre.' });
     }
 
-    const isMatch = await user.comparePassword(password);
+    const user = userRes.rows[0];
+    const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(401).json({
-        success: false,
-        message: 'Geçersiz e-posta veya şifre.'
-      });
+      return res.status(401).json({ success: false, message: 'Geçersiz e-posta veya şifre.' });
     }
 
-    const token = generateToken(user._id, user.role);
+    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
 
     res.cookie('userToken', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      sameSite: 'lax'
     });
 
-    res.status(200).json({
+    res.json({
       success: true,
-      message: 'Giriş başarılı.',
       token,
       user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
+        _id: String(user.id),
+        id: user.id,
+        name: user.name,
         email: user.email,
         phone: user.phone
       }
@@ -222,20 +182,18 @@ export const loginUser = async (req, res, next) => {
   }
 };
 
-// @desc    Get Current Customer Profile
-// @route   GET /api/auth/me
-// @access  Private (User)
 export const getUserProfile = async (req, res, next) => {
   try {
-    res.status(200).json({
+    const userRes = await query('SELECT id, name, email, phone, created_at FROM users WHERE id = $1', [req.user.id]);
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Kullanıcı bulunamadı.' });
+    }
+    const user = userRes.rows[0];
+    res.json({
       success: true,
       user: {
-        id: req.user._id,
-        firstName: req.user.firstName,
-        lastName: req.user.lastName,
-        email: req.user.email,
-        phone: req.user.phone,
-        addresses: req.user.addresses
+        ...user,
+        _id: String(user.id)
       }
     });
   } catch (error) {
@@ -243,13 +201,7 @@ export const getUserProfile = async (req, res, next) => {
   }
 };
 
-// @desc    Customer Logout
-// @route   POST /api/auth/logout
-// @access  Public
 export const logoutUser = async (req, res) => {
-  res.cookie('userToken', '', {
-    httpOnly: true,
-    expires: new Date(0)
-  });
-  res.status(200).json({ success: true, message: 'Çıkış yapıldı.' });
+  res.clearCookie('userToken');
+  res.json({ success: true, message: 'Çıkış yapıldı.' });
 };

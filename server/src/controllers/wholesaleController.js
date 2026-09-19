@@ -1,9 +1,6 @@
-import WholesaleEnquiry from '../models/WholesaleEnquiry.js';
-import { logAudit } from '../middleware/auditLogger.js';
+import { query } from '../config/db.js';
+import { formatWholesaleEnquiry } from '../utils/dbHelpers.js';
 
-// @desc    Submit wholesale B2B enquiry
-// @route   POST /api/wholesale
-// @access  Public
 export const submitWholesaleEnquiry = async (req, res, next) => {
   try {
     const {
@@ -22,100 +19,102 @@ export const submitWholesaleEnquiry = async (req, res, next) => {
       message
     } = req.body;
 
-    if (!companyName || !contactName || !email || !phone || !city || !message) {
-      return res.status(400).json({
-        success: false,
-        message: 'Lütfen zorunlu alanları (Firma, Yetkili, E-posta, Telefon, Şehir, Mesaj) eksiksiz doldurunuz.'
-      });
-    }
+    const insertSql = `
+      INSERT INTO wholesale_enquiries (
+        company_name, contact_name, email, phone, city, country,
+        business_type, tax_id, tax_office, instagram_handle, website,
+        estimated_volume, message
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      RETURNING *
+    `;
 
-    const enquiry = await WholesaleEnquiry.create({
+    const insertRes = await query(insertSql, [
       companyName,
       contactName,
-      email: email.toLowerCase().trim(),
+      email,
       phone,
       city,
-      country: country || 'Türkiye',
-      businessType: businessType || 'Fiziksel Butik / Mağaza',
-      taxId: taxId || '',
-      taxOffice: taxOffice || '',
-      instagramHandle: instagramHandle || '',
-      website: website || '',
-      estimatedVolume: estimatedVolume || '25-50 Adet / Ay',
-      message
-    });
+      country || 'Türkiye',
+      businessType,
+      taxId || null,
+      taxOffice || null,
+      instagramHandle || null,
+      website || null,
+      estimatedVolume || null,
+      message || ''
+    ]);
 
     res.status(201).json({
       success: true,
-      message: 'Toptan satış başvurunuz başarıyla alındı. Satış ekibimiz en kısa sürede sizinle iletişime geçecektir.',
-      enquiry
+      message: 'Toptan satış talebiniz başarıyla alındı. Satış ekibimiz en kısa sürede sizinle iletişime geçecektir.',
+      enquiry: formatWholesaleEnquiry(insertRes.rows[0])
     });
   } catch (error) {
     next(error);
   }
 };
 
-// ================= ADMIN WHOLESALE CONTROLLERS =================
-
-// @desc    Admin: Get all wholesale enquiries
-// @route   GET /api/wholesale/admin/all
-// @access  Private (Admin)
 export const getAdminWholesaleEnquiries = async (req, res, next) => {
   try {
-    const { status, search } = req.query;
-    const query = {};
+    const { status, page = 1, limit = 20 } = req.query;
+    const conditions = [];
+    const params = [];
+    let paramIndex = 1;
 
     if (status && status !== 'all') {
-      query.status = status;
+      conditions.push(`status = $${paramIndex++}`);
+      params.push(status);
     }
 
-    if (search && search.trim()) {
-      const regex = new RegExp(search.trim(), 'i');
-      query.$or = [
-        { companyName: regex },
-        { contactName: regex },
-        { email: regex },
-        { phone: regex },
-        { city: regex }
-      ];
-    }
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    const enquiries = await WholesaleEnquiry.find(query).sort({ createdAt: -1 });
+    const countRes = await query(`SELECT COUNT(id) as total FROM wholesale_enquiries ${whereClause}`, params);
+    const total = parseInt(countRes.rows[0]?.total || '0', 10);
 
-    res.status(200).json({
+    const offset = (Math.max(1, parseInt(page, 10)) - 1) * parseInt(limit, 10);
+    const dataRes = await query(
+      `SELECT * FROM wholesale_enquiries ${whereClause} ORDER BY created_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
+      [...params, parseInt(limit, 10), offset]
+    );
+
+    const enquiries = dataRes.rows.map(formatWholesaleEnquiry);
+
+    res.json({
       success: true,
-      count: enquiries.length,
-      enquiries
+      enquiries,
+      total,
+      page: parseInt(page, 10),
+      pages: Math.ceil(total / parseInt(limit, 10))
     });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Update wholesale status
-// @route   PUT /api/wholesale/admin/:id
-// @access  Private (Admin)
+export const getWholesaleEnquiries = getAdminWholesaleEnquiries;
+
 export const updateAdminWholesaleStatus = async (req, res, next) => {
   try {
+    const { id } = req.params;
     const { status, adminNotes } = req.body;
-    const enquiry = await WholesaleEnquiry.findById(req.params.id);
 
-    if (!enquiry) {
-      return res.status(404).json({ success: false, message: 'Başvuru bulunamadı.' });
+    const result = await query(
+      `UPDATE wholesale_enquiries
+       SET status = COALESCE($1, status),
+           admin_notes = COALESCE($2, admin_notes)
+       WHERE id = $3
+       RETURNING *`,
+      [status, adminNotes, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Talep bulunamadı.' });
     }
 
-    if (status) enquiry.status = status;
-    if (adminNotes !== undefined) enquiry.adminNotes = adminNotes;
-
-    await enquiry.save();
-    await logAudit(req, 'UPDATE_WHOLESALE_STATUS', 'WholesaleEnquiry', enquiry._id, { status, company: enquiry.companyName });
-
-    res.status(200).json({
-      success: true,
-      message: 'Toptan satış başvurusu güncellendi.',
-      enquiry
-    });
+    res.json({ success: true, enquiry: formatWholesaleEnquiry(result.rows[0]) });
   } catch (error) {
     next(error);
   }
 };
+
+export const updateWholesaleStatus = updateAdminWholesaleStatus;

@@ -1,106 +1,108 @@
-import Review from '../models/Review.js';
-import { logAudit } from '../middleware/auditLogger.js';
+import { query } from '../config/db.js';
 
-// @desc    Get approved reviews for a product
-// @route   GET /api/reviews/product/:productId
-// @access  Public
 export const getProductReviews = async (req, res, next) => {
   try {
-    const reviews = await Review.find({
-      product: req.params.productId,
-      status: 'approved'
-    }).sort({ createdAt: -1 });
+    const { productId } = req.params;
+    const result = await query(
+      `SELECT r.*, p.title as product_title
+       FROM reviews r
+       JOIN products p ON p.id = r.product_id
+       WHERE (r.product_id = $1 OR p.slug = $1::text) AND r.is_approved = TRUE
+       ORDER BY r.created_at DESC`,
+      [isNaN(productId) ? 0 : parseInt(productId, 10)]
+    );
 
-    const total = reviews.length;
-    const avgRating = total > 0
-      ? reviews.reduce((sum, r) => sum + r.rating, 0) / total
-      : 0;
+    const reviews = result.rows.map(r => ({
+      _id: String(r.id),
+      productId: String(r.product_id),
+      productTitle: r.product_title,
+      author: r.author,
+      rating: r.rating,
+      comment: r.comment,
+      isApproved: r.is_approved,
+      createdAt: r.created_at
+    }));
 
-    res.status(200).json({
-      success: true,
-      count: total,
-      averageRating: Number(avgRating.toFixed(1)),
-      reviews
-    });
+    res.json({ success: true, reviews });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Submit new product review
-// @route   POST /api/reviews
-// @access  Public
-export const submitReview = async (req, res, next) => {
+export const createReview = async (req, res, next) => {
   try {
-    const { product, name, email, rating, comment } = req.body;
-
-    if (!product || !name || !email || !rating || !comment) {
-      return res.status(400).json({
-        success: false,
-        message: 'Lütfen ürün, isim, e-posta, puan ve yorum alanlarını eksiksiz doldurunuz.'
-      });
+    const { productId, author, rating, comment } = req.body;
+    let prodId = parseInt(productId, 10);
+    if (isNaN(prodId)) {
+      const p = await query('SELECT id FROM products WHERE slug = $1', [productId]);
+      if (p.rows.length > 0) prodId = p.rows[0].id;
     }
 
-    const review = await Review.create({
-      product,
-      name: name.trim(),
-      email: email.toLowerCase().trim(),
-      rating: Number(rating),
-      comment: comment.trim(),
-      status: 'pending' // requires admin moderation
-    });
+    const result = await query(
+      `INSERT INTO reviews (product_id, author, rating, comment, is_approved)
+       VALUES ($1, $2, $3, $4, FALSE)
+       RETURNING *`,
+      [prodId, author, parseInt(rating, 10), comment]
+    );
 
     res.status(201).json({
       success: true,
-      message: 'Değerlendirmeniz alındı. Moderasyon onayının ardından yayınlanacaktır.',
-      review
+      message: 'Değerlendirmeniz alındı. Moderasyon onayından sonra yayınlanacaktır.',
+      review: result.rows[0]
     });
   } catch (error) {
     next(error);
   }
 };
 
-// ================= ADMIN REVIEW CONTROLLERS =================
+export const submitReview = createReview;
 
-// @desc    Admin: Get all reviews with status filter
-// @route   GET /api/reviews/admin/all
-// @access  Private (Admin)
-export const getAdminReviews = async (req, res, next) => {
+export const getAllReviewsAdmin = async (req, res, next) => {
   try {
-    const { status } = req.query;
-    const query = {};
-    if (status && status !== 'all') query.status = status;
+    const result = await query(
+      `SELECT r.*, p.title as product_title
+       FROM reviews r
+       LEFT JOIN products p ON p.id = r.product_id
+       ORDER BY r.created_at DESC`
+    );
 
-    const reviews = await Review.find(query)
-      .populate('product', 'title sku primaryImage')
-      .sort({ createdAt: -1 });
+    const reviews = result.rows.map(r => ({
+      _id: String(r.id),
+      productId: String(r.product_id),
+      productTitle: r.product_title || 'Silinmiş Ürün',
+      author: r.author,
+      rating: r.rating,
+      comment: r.comment,
+      isApproved: r.is_approved,
+      createdAt: r.created_at
+    }));
 
-    res.status(200).json({ success: true, count: reviews.length, reviews });
+    res.json({ success: true, reviews });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Update review status (approve, reject)
-// @route   PUT /api/reviews/admin/:id
-// @access  Private (Admin)
+export const getAdminReviews = getAllReviewsAdmin;
+
 export const updateAdminReviewStatus = async (req, res, next) => {
   try {
-    const { status } = req.body;
-    const review = await Review.findByIdAndUpdate(req.params.id, { status }, { new: true });
+    const { id } = req.params;
+    const { isApproved } = req.body;
 
-    if (!review) {
+    const result = await query(
+      'UPDATE reviews SET is_approved = $1 WHERE id = $2 RETURNING *',
+      [isApproved, id]
+    );
+
+    if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Yorum bulunamadı.' });
     }
 
-    await logAudit(req, 'UPDATE_REVIEW_STATUS', 'Review', review._id, { status });
-
-    res.status(200).json({
-      success: true,
-      message: 'Yorum durumu güncellendi.',
-      review
-    });
+    res.json({ success: true, review: result.rows[0] });
   } catch (error) {
     next(error);
   }
 };
+
+export const updateReviewStatus = updateAdminReviewStatus;

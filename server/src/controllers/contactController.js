@@ -1,88 +1,61 @@
-import ContactMessage from '../models/ContactMessage.js';
-import { logAudit } from '../middleware/auditLogger.js';
+import { query } from '../config/db.js';
 
-// @desc    Submit contact message
-// @route   POST /api/contact
-// @access  Public
 export const submitContactMessage = async (req, res, next) => {
   try {
     const { name, email, phone, subject, message } = req.body;
-
-    if (!name || !email || !subject || !message) {
-      return res.status(400).json({
-        success: false,
-        message: 'Lütfen zorunlu alanları (Ad Soyad, E-posta, Konu, Mesaj) doldurunuz.'
-      });
-    }
-
-    const contact = await ContactMessage.create({
-      name,
-      email: email.toLowerCase().trim(),
-      phone: phone || '',
-      subject,
-      message
-    });
+    const result = await query(
+      `INSERT INTO contact_messages (name, email, phone, subject, message)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [name, email, phone || '', subject || '', message]
+    );
 
     res.status(201).json({
       success: true,
-      message: 'Mesajınız başarıyla iletildi. Müşteri temsilcimiz en kısa sürede dönüş yapacaktır.',
-      contact
+      message: 'Mesajınız başarıyla iletildi. En kısa sürede sizinle iletişime geçeceğiz.',
+      contactMessage: result.rows[0]
     });
   } catch (error) {
     next(error);
   }
 };
 
-// ================= ADMIN CONTACT CONTROLLERS =================
-
-// @desc    Admin: Get all contact messages
-// @route   GET /api/contact/admin/all
-// @access  Private (Admin)
 export const getAdminContactMessages = async (req, res, next) => {
   try {
-    const { status, isRead } = req.query;
-    const query = {};
-
-    if (status && status !== 'all') query.status = status;
-    if (isRead !== undefined) query.isRead = isRead === 'true';
-
-    const messages = await ContactMessage.find(query).sort({ createdAt: -1 });
-
-    res.status(200).json({
-      success: true,
-      count: messages.length,
-      messages
-    });
+    const result = await query('SELECT * FROM contact_messages ORDER BY created_at DESC');
+    const messages = result.rows.map(r => ({
+      _id: String(r.id),
+      name: r.name,
+      email: r.email,
+      phone: r.phone,
+      subject: r.subject,
+      message: r.message,
+      isRead: r.is_read,
+      createdAt: r.created_at
+    }));
+    res.json({ success: true, messages });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Update contact message status / read state
-// @route   PUT /api/contact/admin/:id
-// @access  Private (Admin)
+export const getContactMessages = getAdminContactMessages;
+
 export const updateAdminContactStatus = async (req, res, next) => {
   try {
-    const { status, isRead, adminNotes } = req.body;
-    const contact = await ContactMessage.findById(req.params.id);
-
-    if (!contact) {
+    const { id } = req.params;
+    const { isRead } = req.body;
+    const result = await query(
+      'UPDATE contact_messages SET is_read = COALESCE($1, TRUE) WHERE id = $2 RETURNING *',
+      [isRead, id]
+    );
+    if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Mesaj bulunamadı.' });
     }
-
-    if (status) contact.status = status;
-    if (isRead !== undefined) contact.isRead = isRead;
-    if (adminNotes !== undefined) contact.adminNotes = adminNotes;
-
-    await contact.save();
-    await logAudit(req, 'UPDATE_CONTACT_STATUS', 'ContactMessage', contact._id, { status, isRead });
-
-    res.status(200).json({
-      success: true,
-      message: 'Mesaj durumu güncellendi.',
-      contact
-    });
+    res.json({ success: true, message: result.rows[0] });
   } catch (error) {
     next(error);
   }
 };
+
+export const markMessageAsRead = updateAdminContactStatus;

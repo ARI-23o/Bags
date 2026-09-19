@@ -1,139 +1,141 @@
-import Collection from '../models/Collection.js';
-import Product from '../models/Product.js';
-import { slugifyTurkish } from '../utils/slugify.js';
-import { logAudit } from '../middleware/auditLogger.js';
+import { query } from '../config/db.js';
+import { slugify } from '../utils/slugify.js';
+import { formatCollection } from '../utils/dbHelpers.js';
 
-// @desc    Get all active collections
-// @route   GET /api/collections
-// @access  Public
 export const getCollections = async (req, res, next) => {
   try {
-    const collections = await Collection.find({ isActive: true }).sort({ order: 1, createdAt: -1 });
+    const { includeInactive } = req.query;
+    let sql = `
+      SELECT c.*, COUNT(p.id) as product_count
+      FROM collections c
+      LEFT JOIN products p ON p.collection_id = c.id AND p.status = 'active'
+    `;
+    const params = [];
 
-    const collectionsWithCount = await Promise.all(
-      collections.map(async (col) => {
-        const count = await Product.countDocuments({ collectionId: col._id, status: 'active' });
-        return {
-          ...col.toObject(),
-          productCount: count
-        };
-      })
-    );
-
-    res.status(200).json({
-      success: true,
-      collections: collectionsWithCount
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Get collection by slug
-// @route   GET /api/collections/:slug
-// @access  Public
-export const getCollectionBySlug = async (req, res, next) => {
-  try {
-    const collection = await Collection.findOne({ slug: req.params.slug });
-    if (!collection) {
-      return res.status(404).json({ success: false, message: 'Koleksiyon bulunamadı.' });
+    if (includeInactive !== 'true') {
+      sql += ' WHERE c.is_active = TRUE';
     }
 
-    const count = await Product.countDocuments({ collectionId: collection._id, status: 'active' });
+    sql += ' GROUP BY c.id ORDER BY c.order_index ASC, c.name ASC';
 
-    res.status(200).json({
-      success: true,
-      collection: {
-        ...collection.toObject(),
-        productCount: count
-      }
-    });
+    const result = await query(sql, params);
+    const collections = result.rows.map(formatCollection);
+
+    res.json({ success: true, collections });
   } catch (error) {
     next(error);
   }
 };
 
-// ================= ADMIN COLLECTION CONTROLLERS =================
-
-// @desc    Admin: Get all collections
-// @route   GET /api/collections/admin/all
-// @access  Private (Admin)
 export const getAdminCollections = async (req, res, next) => {
   try {
-    const collections = await Collection.find().sort({ order: 1, createdAt: -1 });
-    res.status(200).json({ success: true, collections });
+    const sql = `
+      SELECT c.*, COUNT(p.id) as product_count
+      FROM collections c
+      LEFT JOIN products p ON p.collection_id = c.id
+      GROUP BY c.id
+      ORDER BY c.order_index ASC, c.name ASC
+    `;
+    const result = await query(sql);
+    const collections = result.rows.map(formatCollection);
+    res.json({ success: true, collections });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Create collection
-// @route   POST /api/collections
-// @access  Private (Admin)
+export const getCollectionBySlug = async (req, res, next) => {
+  try {
+    const { slug } = req.params;
+    const result = await query(
+      `SELECT c.*, COUNT(p.id) as product_count
+       FROM collections c
+       LEFT JOIN products p ON p.collection_id = c.id AND p.status = 'active'
+       WHERE c.slug = $1
+       GROUP BY c.id`,
+      [slug]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Koleksiyon bulunamadı.' });
+    }
+
+    res.json({ success: true, collection: formatCollection(result.rows[0]) });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const createCollection = async (req, res, next) => {
   try {
-    const data = { ...req.body };
-    if (!data.slug && data.name) {
-      data.slug = slugifyTurkish(data.name);
+    const { name, subtitle, description, image, bannerImage, order, isFeatured, isActive } = req.body;
+    let baseSlug = slugify(name);
+    let finalSlug = baseSlug;
+
+    const existing = await query('SELECT id FROM collections WHERE slug = $1', [finalSlug]);
+    if (existing.rows.length > 0) {
+      finalSlug = `${baseSlug}-${Date.now()}`;
     }
 
-    const collection = await Collection.create(data);
-    await logAudit(req, 'CREATE_COLLECTION', 'Collection', collection._id, { name: collection.name });
+    const insertRes = await query(
+      `INSERT INTO collections (name, slug, subtitle, description, image, banner_image, order_index, is_featured, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [name, finalSlug, subtitle || '', description || '', image || '', bannerImage || '', order || 0, isFeatured || false, isActive !== false]
+    );
 
-    res.status(201).json({
-      success: true,
-      message: 'Koleksiyon başarıyla oluşturuldu.',
-      collection
-    });
+    res.status(201).json({ success: true, collection: formatCollection(insertRes.rows[0]) });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Update collection
-// @route   PUT /api/collections/:id
-// @access  Private (Admin)
 export const updateCollection = async (req, res, next) => {
   try {
-    const data = { ...req.body };
-    if (data.name && !data.slug) {
-      data.slug = slugifyTurkish(data.name);
-    }
+    const { id } = req.params;
+    const { name, subtitle, description, image, bannerImage, order, isFeatured, isActive } = req.body;
 
-    const collection = await Collection.findByIdAndUpdate(req.params.id, data, {
-      new: true,
-      runValidators: true
-    });
-
-    if (!collection) {
+    const currentRes = await query('SELECT * FROM collections WHERE id = $1', [id]);
+    if (currentRes.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Koleksiyon bulunamadı.' });
     }
 
-    await logAudit(req, 'UPDATE_COLLECTION', 'Collection', collection._id, { name: collection.name });
+    let slug = currentRes.rows[0].slug;
+    if (name && name !== currentRes.rows[0].name) {
+      slug = slugify(name);
+    }
 
-    res.status(200).json({
-      success: true,
-      message: 'Koleksiyon başarıyla güncellendi.',
-      collection
-    });
+    const updateRes = await query(
+      `UPDATE collections
+       SET name = COALESCE($1, name),
+           slug = $2,
+           subtitle = COALESCE($3, subtitle),
+           description = COALESCE($4, description),
+           image = COALESCE($5, image),
+           banner_image = COALESCE($6, banner_image),
+           order_index = COALESCE($7, order_index),
+           is_featured = COALESCE($8, is_featured),
+           is_active = COALESCE($9, is_active),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $10
+       RETURNING *`,
+      [name, slug, subtitle, description, image, bannerImage, order, isFeatured, isActive, id]
+    );
+
+    res.json({ success: true, collection: formatCollection(updateRes.rows[0]) });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Admin: Delete collection
-// @route   DELETE /api/collections/:id
-// @access  Private (Admin)
 export const deleteCollection = async (req, res, next) => {
   try {
-    const collection = await Collection.findByIdAndDelete(req.params.id);
-    if (!collection) {
+    const { id } = req.params;
+    const result = await query('DELETE FROM collections WHERE id = $1 RETURNING id', [id]);
+    if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Koleksiyon bulunamadı.' });
     }
-
-    await logAudit(req, 'DELETE_COLLECTION', 'Collection', req.params.id, { name: collection.name });
-
-    res.status(200).json({ success: true, message: 'Koleksiyon başarıyla silindi.' });
+    res.json({ success: true, message: 'Koleksiyon başarıyla silindi.' });
   } catch (error) {
     next(error);
   }
