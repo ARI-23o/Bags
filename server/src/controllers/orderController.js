@@ -1,6 +1,10 @@
 import { query } from '../config/db.js';
 import { formatOrder } from '../utils/dbHelpers.js';
 
+// Server-side validation helpers
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const NAME_REGEX = /^[a-zA-ZçÇğĞıİöÖşŞüÜ\s'-]{2,}$/;
+
 export const getAdminOrders = async (req, res, next) => {
   try {
     const { status, paymentStatus, search, page = 1, limit = 20 } = req.query;
@@ -121,6 +125,61 @@ export const createOrder = async (req, res, next) => {
       notes
     } = req.body;
 
+    // Strict Server-Side Validations
+    if (!customer || typeof customer !== 'object') {
+      return res.status(400).json({ success: false, message: 'Müşteri bilgileri eksik veya geçersiz.' });
+    }
+
+    const { firstName, lastName, email, phone } = customer;
+
+    if (!firstName || !NAME_REGEX.test(firstName.trim())) {
+      return res.status(400).json({ success: false, message: 'Geçersiz müşteri adı. Ad en az 2 harften oluşmalıdır.' });
+    }
+
+    if (!lastName || !NAME_REGEX.test(lastName.trim())) {
+      return res.status(400).json({ success: false, message: 'Geçersiz müşteri soyadı. Soyad en az 2 harften oluşmalıdır.' });
+    }
+
+    if (!email || !EMAIL_REGEX.test(email.trim())) {
+      return res.status(400).json({ success: false, message: 'Geçersiz e-posta formatı. Lütfen geçerli bir e-posta giriniz.' });
+    }
+
+    const cleanPhone = (phone || '').replace(/\D/g, '');
+    if (cleanPhone.length < 10 || cleanPhone.length > 12) {
+      return res.status(400).json({ success: false, message: 'Geçersiz telefon numarası. 10 veya 11 haneli geçerli bir telefon numarası giriniz.' });
+    }
+
+    if (!shippingAddress || typeof shippingAddress !== 'object') {
+      return res.status(400).json({ success: false, message: 'Teslimat adresi eksik veya geçersiz.' });
+    }
+
+    const { city, district, address, postalCode } = shippingAddress;
+
+    if (!city || city.trim().length < 2) {
+      return res.status(400).json({ success: false, message: 'Lütfen geçerli bir il seçiniz.' });
+    }
+
+    if (!district || district.trim().length < 2) {
+      return res.status(400).json({ success: false, message: 'İlçe alanı en az 2 karakter olmalıdır.' });
+    }
+
+    if (!address || address.trim().length < 10) {
+      return res.status(400).json({ success: false, message: 'Lütfen açık ve detaylı teslimat adresi giriniz (en az 10 karakter).' });
+    }
+
+    if (postalCode && postalCode.trim() && !/^\d{5}$/.test(postalCode.trim())) {
+      return res.status(400).json({ success: false, message: 'Posta kodu 5 haneli sayıdan oluşmalıdır.' });
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, message: 'Siparişinizde en az bir ürün bulunmalıdır.' });
+    }
+
+    const parsedTotal = parseFloat(total);
+    if (isNaN(parsedTotal) || parsedTotal <= 0) {
+      return res.status(400).json({ success: false, message: 'Geçersiz sipariş toplam tutarı.' });
+    }
+
     const orderNumber = `NC-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 90 + 10)}`;
 
     const insertSql = `
@@ -140,16 +199,17 @@ export const createOrder = async (req, res, next) => {
       parseFloat(shippingFee || 0),
       parseFloat(discountAmount || 0),
       couponCode || null,
-      parseFloat(total),
+      parsedTotal,
       paymentMethod || 'havale_eft',
-      notes || ''
+      notes ? String(notes).slice(0, 500) : ''
     ]);
 
     // Update stock for purchased products
     if (Array.isArray(items)) {
       for (const item of items) {
-        if (item.product && !isNaN(item.product)) {
-          await query('UPDATE products SET stock = GREATEST(0, stock - $1) WHERE id = $2', [item.quantity || 1, parseInt(item.product, 10)]);
+        const prodId = item.productId || item.product;
+        if (prodId && !isNaN(prodId)) {
+          await query('UPDATE products SET stock = GREATEST(0, stock - $1) WHERE id = $2', [item.quantity || 1, parseInt(prodId, 10)]);
         }
       }
     }

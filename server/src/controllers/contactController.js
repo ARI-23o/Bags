@@ -1,13 +1,40 @@
 import { query } from '../config/db.js';
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const NAME_REGEX = /^[a-zA-ZçÇğĞıİöÖşŞüÜ\s'-]{2,}$/;
+
 export const submitContactMessage = async (req, res, next) => {
   try {
     const { name, email, phone, subject, message } = req.body;
+
+    if (!name || !NAME_REGEX.test(name.trim())) {
+      return res.status(400).json({ success: false, message: 'Geçersiz ad soyad. Sadece harfler kullanılabilir (en az 2 karakter).' });
+    }
+
+    if (!email || !EMAIL_REGEX.test(email.trim())) {
+      return res.status(400).json({ success: false, message: 'Geçerli bir e-posta adresi giriniz.' });
+    }
+
+    if (phone && phone.trim()) {
+      const cleanPhone = phone.trim().replace(/\D/g, '');
+      if (cleanPhone.length < 10 || cleanPhone.length > 12) {
+        return res.status(400).json({ success: false, message: 'Geçerli bir telefon numarası giriniz.' });
+      }
+    }
+
+    if (!subject || subject.trim().length < 3) {
+      return res.status(400).json({ success: false, message: 'Konu en az 3 karakter olmalıdır.' });
+    }
+
+    if (!message || message.trim().length < 10) {
+      return res.status(400).json({ success: false, message: 'Mesajınız en az 10 karakter olmalıdır.' });
+    }
+
     const result = await query(
       `INSERT INTO contact_messages (name, email, phone, subject, message)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [name, email, phone || '', subject || '', message]
+      [name.trim(), email.trim().toLowerCase(), phone ? phone.trim() : '', subject.trim(), message.trim()]
     );
 
     res.status(201).json({

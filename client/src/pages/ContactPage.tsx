@@ -1,8 +1,14 @@
 import React, { useState } from 'react';
-import { MapPin, Phone, Mail, Clock, MessageCircle, Send, CheckCircle2 } from 'lucide-react';
+import { MapPin, Phone, Mail, Clock, MessageCircle, Send, CheckCircle2, AlertCircle } from 'lucide-react';
 import api from '../services/api';
 import { useSettings } from '../context/SettingsContext';
 import { SEOHelmet } from '../components/common/SEOHelmet';
+import {
+  validateName,
+  validateEmail,
+  validatePhone,
+  formatPhoneNumber
+} from '../utils/validators';
 
 export const ContactPage: React.FC = () => {
   const { settings } = useSettings();
@@ -15,26 +21,91 @@ export const ContactPage: React.FC = () => {
     message: ''
   });
 
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [error, setError] = useState('');
+  const [generalError, setGeneralError] = useState('');
+
+  const validateField = (name: string, value: string) => {
+    let errorMsg = '';
+    switch (name) {
+      case 'name': {
+        const res = validateName(value);
+        if (!res.isValid) errorMsg = res.error || 'Geçersiz ad soyad.';
+        break;
+      }
+      case 'email': {
+        const res = validateEmail(value);
+        if (!res.isValid) errorMsg = res.error || 'Geçersiz e-posta.';
+        break;
+      }
+      case 'phone': {
+        if (value && value.trim()) {
+          const res = validatePhone(value);
+          if (!res.isValid) errorMsg = res.error || 'Geçersiz telefon.';
+        }
+        break;
+      }
+      case 'subject':
+        if (!value || value.trim().length < 3) errorMsg = 'Konu en az 3 karakter olmalıdır.';
+        break;
+      case 'message':
+        if (!value || value.trim().length < 10) errorMsg = 'Mesajınız en az 10 karakter olmalıdır.';
+        break;
+      default:
+        break;
+    }
+
+    setErrors((prev) => ({ ...prev, [name]: errorMsg }));
+    return errorMsg === '';
+  };
+
+  const handleBlur = (field: string) => {
+    setTouched((prev) => ({ ...prev, [field]: true }));
+    validateField(field, (formData as any)[field] || '');
+  };
 
   const handleInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
   ) => {
     const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    let cleanValue = value;
+
+    if (name === 'phone') {
+      cleanValue = formatPhoneNumber(value);
+    } else if (name === 'name') {
+      cleanValue = value.replace(/[^a-zA-ZçÇğĞıİöÖşŞüÜ\s'-]/g, '');
+    }
+
+    setFormData((prev) => ({ ...prev, [name]: cleanValue }));
+
+    if (touched[name]) {
+      validateField(name, cleanValue);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name.trim() || !formData.email.trim() || !formData.subject.trim() || !formData.message.trim()) {
-      setError('Lütfen tüm zorunlu alanları doldurunuz.');
+    setGeneralError('');
+
+    const fieldsToValidate = ['name', 'email', 'phone', 'subject', 'message'];
+    const newTouched: Record<string, boolean> = {};
+    fieldsToValidate.forEach((f) => { newTouched[f] = true; });
+    setTouched(newTouched);
+
+    let isValid = true;
+    fieldsToValidate.forEach((f) => {
+      const valid = validateField(f, (formData as any)[f] || '');
+      if (!valid) isValid = false;
+    });
+
+    if (!isValid) {
+      setGeneralError('Lütfen formdaki eksik veya hatalı alanları düzeltiniz.');
       return;
     }
 
     setLoading(true);
-    setError('');
 
     try {
       const response = await api.post('/contact', formData);
@@ -42,10 +113,10 @@ export const ContactPage: React.FC = () => {
         setSubmitted(true);
         setFormData({ name: '', email: '', phone: '', subject: '', message: '' });
       } else {
-        setError(response.data.message || 'Mesaj gönderilemedi.');
+        setGeneralError(response.data.message || 'Mesaj gönderilemedi.');
       }
     } catch (err: any) {
-      setError(err.message || 'Mesaj gönderilirken bir hata oluştu.');
+      setGeneralError(err.response?.data?.message || err.message || 'Mesaj gönderilirken bir hata oluştu.');
     } finally {
       setLoading(false);
     }
@@ -100,11 +171,9 @@ export const ContactPage: React.FC = () => {
                 <Phone className="w-5 h-5 text-brand-gold flex-shrink-0 mt-0.5" />
                 <div>
                   <span className="font-bold text-brand-primary block text-sm mb-1">
-                    Telefon
+                    Telefon & WhatsApp
                   </span>
-                  <a href={`tel:${settings.phone}`} className="text-brand-taupe hover:text-brand-primary">
-                    {settings.phone}
-                  </a>
+                  <p className="text-brand-taupe">{settings.phone}</p>
                 </div>
               </div>
 
@@ -114,9 +183,7 @@ export const ContactPage: React.FC = () => {
                   <span className="font-bold text-brand-primary block text-sm mb-1">
                     E-Posta
                   </span>
-                  <a href={`mailto:${settings.email}`} className="text-brand-taupe hover:text-brand-primary">
-                    {settings.email}
-                  </a>
+                  <p className="text-brand-taupe">{settings.email}</p>
                 </div>
               </div>
 
@@ -172,9 +239,10 @@ export const ContactPage: React.FC = () => {
               </div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-4">
-                {error && (
-                  <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs font-semibold rounded-sm">
-                    {error}
+                {generalError && (
+                  <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs font-semibold rounded-sm flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{generalError}</span>
                   </div>
                 )}
 
@@ -189,9 +257,19 @@ export const ContactPage: React.FC = () => {
                       required
                       value={formData.name}
                       onChange={handleInputChange}
+                      onBlur={() => handleBlur('name')}
                       placeholder="Ad Soyad"
-                      className="w-full bg-brand-bg border border-brand-border p-3 text-xs rounded-sm focus:outline-none focus:border-brand-primary"
+                      className={`w-full bg-brand-bg border p-3 text-xs rounded-sm focus:outline-none transition-colors ${
+                        touched.name && errors.name
+                          ? 'border-red-500 bg-red-50/20'
+                          : 'border-brand-border focus:border-brand-primary'
+                      }`}
                     />
+                    {touched.name && errors.name && (
+                      <p className="text-[11px] text-red-600 mt-1 flex items-center gap-1 font-medium">
+                        <AlertCircle className="w-3 h-3" /> {errors.name}
+                      </p>
+                    )}
                   </div>
 
                   <div>
@@ -204,9 +282,19 @@ export const ContactPage: React.FC = () => {
                       required
                       value={formData.email}
                       onChange={handleInputChange}
+                      onBlur={() => handleBlur('email')}
                       placeholder="ornek@mail.com"
-                      className="w-full bg-brand-bg border border-brand-border p-3 text-xs rounded-sm focus:outline-none focus:border-brand-primary"
+                      className={`w-full bg-brand-bg border p-3 text-xs rounded-sm focus:outline-none transition-colors ${
+                        touched.email && errors.email
+                          ? 'border-red-500 bg-red-50/20'
+                          : 'border-brand-border focus:border-brand-primary'
+                      }`}
                     />
+                    {touched.email && errors.email && (
+                      <p className="text-[11px] text-red-600 mt-1 flex items-center gap-1 font-medium">
+                        <AlertCircle className="w-3 h-3" /> {errors.email}
+                      </p>
+                    )}
                   </div>
 
                   <div>
@@ -216,11 +304,22 @@ export const ContactPage: React.FC = () => {
                     <input
                       type="tel"
                       name="phone"
+                      maxLength={14}
                       value={formData.phone}
                       onChange={handleInputChange}
-                      placeholder="0532 000 00 00"
-                      className="w-full bg-brand-bg border border-brand-border p-3 text-xs rounded-sm focus:outline-none focus:border-brand-primary"
+                      onBlur={() => handleBlur('phone')}
+                      placeholder="05XX XXX XX XX"
+                      className={`w-full bg-brand-bg border p-3 text-xs rounded-sm focus:outline-none transition-colors ${
+                        touched.phone && errors.phone
+                          ? 'border-red-500 bg-red-50/20'
+                          : 'border-brand-border focus:border-brand-primary'
+                      }`}
                     />
+                    {touched.phone && errors.phone && (
+                      <p className="text-[11px] text-red-600 mt-1 flex items-center gap-1 font-medium">
+                        <AlertCircle className="w-3 h-3" /> {errors.phone}
+                      </p>
+                    )}
                   </div>
 
                   <div>
@@ -233,34 +332,54 @@ export const ContactPage: React.FC = () => {
                       required
                       value={formData.subject}
                       onChange={handleInputChange}
+                      onBlur={() => handleBlur('subject')}
                       placeholder="Örn: Sipariş / Ürün Bilgisi"
-                      className="w-full bg-brand-bg border border-brand-border p-3 text-xs rounded-sm focus:outline-none focus:border-brand-primary"
+                      className={`w-full bg-brand-bg border p-3 text-xs rounded-sm focus:outline-none transition-colors ${
+                        touched.subject && errors.subject
+                          ? 'border-red-500 bg-red-50/20'
+                          : 'border-brand-border focus:border-brand-primary'
+                      }`}
                     />
+                    {touched.subject && errors.subject && (
+                      <p className="text-[11px] text-red-600 mt-1 flex items-center gap-1 font-medium">
+                        <AlertCircle className="w-3 h-3" /> {errors.subject}
+                      </p>
+                    )}
                   </div>
+                </div>
 
-                  <div className="sm:col-span-2">
-                    <label className="block text-xs font-semibold uppercase tracking-luxury text-brand-primary mb-1">
-                      Mesajınız *
-                    </label>
-                    <textarea
-                      name="message"
-                      required
-                      rows={5}
-                      value={formData.message}
-                      onChange={handleInputChange}
-                      placeholder="Mesajınızı buraya yazınız..."
-                      className="w-full bg-brand-bg border border-brand-border p-3 text-xs rounded-sm focus:outline-none focus:border-brand-primary"
-                    />
-                  </div>
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-luxury text-brand-primary mb-1">
+                    Mesajınız *
+                  </label>
+                  <textarea
+                    name="message"
+                    required
+                    rows={5}
+                    value={formData.message}
+                    onChange={handleInputChange}
+                    onBlur={() => handleBlur('message')}
+                    placeholder="Mesajınızı buraya yazabilirsiniz..."
+                    className={`w-full bg-brand-bg border p-3 text-xs rounded-sm focus:outline-none transition-colors ${
+                      touched.message && errors.message
+                        ? 'border-red-500 bg-red-50/20'
+                        : 'border-brand-border focus:border-brand-primary'
+                    }`}
+                  />
+                  {touched.message && errors.message && (
+                    <p className="text-[11px] text-red-600 mt-1 flex items-center gap-1 font-medium">
+                      <AlertCircle className="w-3 h-3" /> {errors.message}
+                    </p>
+                  )}
                 </div>
 
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full luxury-btn-primary py-3.5 text-xs font-semibold"
+                  className="w-full luxury-btn-primary flex items-center justify-center gap-2 py-4 disabled:opacity-50"
                 >
                   <Send className="w-4 h-4" />
-                  {loading ? 'Gönderiliyor...' : 'Mesajı Gönder'}
+                  {loading ? 'Mesajınız Gönderiliyor...' : 'Mesajı Gönder'}
                 </button>
               </form>
             )}

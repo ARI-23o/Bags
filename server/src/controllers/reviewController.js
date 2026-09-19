@@ -1,5 +1,7 @@
 import { query } from '../config/db.js';
 
+const NAME_REGEX = /^[a-zA-ZçÇğĞıİöÖşŞüÜ\s'-]{2,}$/;
+
 export const getProductReviews = async (req, res, next) => {
   try {
     const { productId } = req.params;
@@ -32,17 +34,35 @@ export const getProductReviews = async (req, res, next) => {
 export const createReview = async (req, res, next) => {
   try {
     const { productId, author, rating, comment } = req.body;
+
+    if (!author || !NAME_REGEX.test(author.trim())) {
+      return res.status(400).json({ success: false, message: 'Geçersiz isim. Adınız sadece harflerden oluşmalıdır (en az 2 karakter).' });
+    }
+
+    const numRating = parseInt(rating, 10);
+    if (isNaN(numRating) || numRating < 1 || numRating > 5) {
+      return res.status(400).json({ success: false, message: 'Lütfen 1 ile 5 arasında geçerli bir puan veriniz.' });
+    }
+
+    if (!comment || comment.trim().length < 5) {
+      return res.status(400).json({ success: false, message: 'Değerlendirme yorumunuz en az 5 karakter olmalıdır.' });
+    }
+
     let prodId = parseInt(productId, 10);
     if (isNaN(prodId)) {
       const p = await query('SELECT id FROM products WHERE slug = $1', [productId]);
       if (p.rows.length > 0) prodId = p.rows[0].id;
     }
 
+    if (!prodId) {
+      return res.status(400).json({ success: false, message: 'Değerlendirilecek ürün bulunamadı.' });
+    }
+
     const result = await query(
       `INSERT INTO reviews (product_id, author, rating, comment, is_approved)
        VALUES ($1, $2, $3, $4, FALSE)
        RETURNING *`,
-      [prodId, author, parseInt(rating, 10), comment]
+      [prodId, author.trim(), numRating, comment.trim()]
     );
 
     res.status(201).json({

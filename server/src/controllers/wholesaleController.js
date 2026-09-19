@@ -1,6 +1,9 @@
 import { query } from '../config/db.js';
 import { formatWholesaleEnquiry } from '../utils/dbHelpers.js';
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const NAME_REGEX = /^[a-zA-ZçÇğĞıİöÖşŞüÜ\s'-]{2,}$/;
+
 export const submitWholesaleEnquiry = async (req, res, next) => {
   try {
     const {
@@ -19,6 +22,38 @@ export const submitWholesaleEnquiry = async (req, res, next) => {
       message
     } = req.body;
 
+    if (!companyName || companyName.trim().length < 2) {
+      return res.status(400).json({ success: false, message: 'Firma / Butik adı en az 2 karakter olmalıdır.' });
+    }
+
+    if (!contactName || !NAME_REGEX.test(contactName.trim())) {
+      return res.status(400).json({ success: false, message: 'Geçersiz yetkili adı. Ad soyad sadece harflerden oluşmalıdır.' });
+    }
+
+    if (!email || !EMAIL_REGEX.test(email.trim())) {
+      return res.status(400).json({ success: false, message: 'Geçerli bir e-posta adresi giriniz.' });
+    }
+
+    const cleanPhone = (phone || '').replace(/\D/g, '');
+    if (cleanPhone.length < 10 || cleanPhone.length > 12) {
+      return res.status(400).json({ success: false, message: 'Geçerli bir telefon numarası giriniz (10 veya 11 hane).' });
+    }
+
+    if (!city || city.trim().length < 2) {
+      return res.status(400).json({ success: false, message: 'Şehir alanı zorunludur.' });
+    }
+
+    if (!message || message.trim().length < 10) {
+      return res.status(400).json({ success: false, message: 'Mesajınız en az 10 karakter olmalıdır.' });
+    }
+
+    if (taxId && taxId.trim()) {
+      const cleanTax = taxId.trim().replace(/\D/g, '');
+      if (cleanTax.length !== 10 && cleanTax.length !== 11) {
+        return res.status(400).json({ success: false, message: 'Vergi No 10 hane veya TCKN 11 hane olmalıdır.' });
+      }
+    }
+
     const insertSql = `
       INSERT INTO wholesale_enquiries (
         company_name, contact_name, email, phone, city, country,
@@ -29,19 +64,19 @@ export const submitWholesaleEnquiry = async (req, res, next) => {
     `;
 
     const insertRes = await query(insertSql, [
-      companyName,
-      contactName,
-      email,
-      phone,
-      city,
+      companyName.trim(),
+      contactName.trim(),
+      email.trim().toLowerCase(),
+      cleanPhone,
+      city.trim(),
       country || 'Türkiye',
-      businessType,
-      taxId || null,
-      taxOffice || null,
-      instagramHandle || null,
-      website || null,
-      estimatedVolume || null,
-      message || ''
+      businessType || 'Fiziksel Butik / Mağaza',
+      taxId ? taxId.trim() : null,
+      taxOffice ? taxOffice.trim() : null,
+      instagramHandle ? instagramHandle.trim() : null,
+      website ? website.trim() : null,
+      estimatedVolume ? estimatedVolume.trim() : null,
+      message.trim()
     ]);
 
     res.status(201).json({
