@@ -179,7 +179,7 @@ export const ManageCoupons: React.FC = () => {
                     </td>
                     <td className="p-4 font-bold text-white">
                       {coupon.discountType === 'percent'
-                        ? `%{coupon.discountValue}`
+                        ? `%${coupon.discountValue}`
                         : formatTRY(coupon.discountValue)}
                     </td>
                     <td className="p-4 text-slate-300">
