@@ -11,33 +11,39 @@ import { InstagramGrid } from '../components/home/InstagramGrid';
 import { NewsletterSection } from '../components/home/NewsletterSection';
 import { ProductCard } from '../components/product/ProductCard';
 import { SEOHelmet } from '../components/common/SEOHelmet';
+import {
+  mockHeroSlides,
+  mockCategories,
+  mockProducts,
+  mockInstagramPosts
+} from '../services/mockData';
 
 export const Home: React.FC = () => {
-  const [slides, setSlides] = useState<HeroSlide[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [newArrivals, setNewArrivals] = useState<Product[]>([]);
-  const [featuredProducts, setFeaturedProducts] = useState<Product[]>([]);
-  const [instagramPosts, setInstagramPosts] = useState<InstagramPost[]>([]);
+  const [slides, setSlides] = useState<HeroSlide[]>(mockHeroSlides);
+  const [categories, setCategories] = useState<Category[]>(mockCategories);
+  const [newArrivals, setNewArrivals] = useState<Product[]>(mockProducts.filter(p => p.isNewArrival));
+  const [featuredProducts, setFeaturedProducts] = useState<Product[]>(mockProducts.filter(p => p.isFeatured));
+  const [instagramPosts, setInstagramPosts] = useState<InstagramPost[]>(mockInstagramPosts);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchHomeData = async () => {
       try {
         const [slidesRes, catsRes, newRes, featRes, instaRes] = await Promise.all([
-          api.get('/hero'),
-          api.get('/categories'),
-          api.get('/products?isNewArrival=true&limit=4'),
-          api.get('/products?isFeatured=true&limit=4'),
-          api.get('/instagram')
+          api.get('/hero').catch(() => ({ data: { success: false } })),
+          api.get('/categories').catch(() => ({ data: { success: false } })),
+          api.get('/products?isNewArrival=true&limit=4').catch(() => ({ data: { success: false } })),
+          api.get('/products?isFeatured=true&limit=4').catch(() => ({ data: { success: false } })),
+          api.get('/instagram').catch(() => ({ data: { success: false } }))
         ]);
 
-        if (slidesRes.data.success) setSlides(slidesRes.data.slides);
-        if (catsRes.data.success) setCategories(catsRes.data.categories);
-        if (newRes.data.success) setNewArrivals(newRes.data.products);
-        if (featRes.data.success) setFeaturedProducts(featRes.data.products);
-        if (instaRes.data.success) setInstagramPosts(instaRes.data.posts);
+        if (slidesRes.data?.success && slidesRes.data.slides?.length > 0) setSlides(slidesRes.data.slides);
+        if (catsRes.data?.success && catsRes.data.categories?.length > 0) setCategories(catsRes.data.categories);
+        if (newRes.data?.success && newRes.data.products?.length > 0) setNewArrivals(newRes.data.products);
+        if (featRes.data?.success && featRes.data.products?.length > 0) setFeaturedProducts(featRes.data.products);
+        if (instaRes.data?.success && instaRes.data.posts?.length > 0) setInstagramPosts(instaRes.data.posts);
       } catch (error) {
-        console.error('Home data load error', error);
+        console.warn('Using local demo data for Home page');
       } finally {
         setLoading(false);
       }

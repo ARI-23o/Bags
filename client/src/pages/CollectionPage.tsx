@@ -4,33 +4,33 @@ import api from '../services/api';
 import { Product, Collection } from '../types';
 import { ProductCard } from '../components/product/ProductCard';
 import { SEOHelmet } from '../components/common/SEOHelmet';
+import { mockCollections, mockProducts } from '../services/mockData';
 
 export const CollectionPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
-  const [collection, setCollection] = useState<Collection | null>(null);
-  const [collectionsList, setCollectionsList] = useState<Collection[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [collection, setCollection] = useState<Collection | null>(() => mockCollections.find(c => c.slug === slug) || null);
+  const [collectionsList, setCollectionsList] = useState<Collection[]>(mockCollections);
+  const [products, setProducts] = useState<Product[]>(() => mockProducts.filter(p => p.collectionId?.slug === slug || (p.collectionId as any) === slug));
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
-      setLoading(true);
       try {
         if (slug) {
           const [colRes, prodRes] = await Promise.all([
-            api.get(`/collections/${slug}`),
-            api.get(`/products?collection=${slug}&limit=24`)
+            api.get(`/collections/${slug}`).catch(() => ({ data: { success: false } })),
+            api.get(`/products?collection=${slug}&limit=24`).catch(() => ({ data: { success: false } }))
           ]);
 
-          if (colRes.data.success) setCollection(colRes.data.collection);
-          if (prodRes.data.success) setProducts(prodRes.data.products);
+          if (colRes.data?.success && colRes.data.collection) setCollection(colRes.data.collection);
+          if (prodRes.data?.success && prodRes.data.products?.length > 0) setProducts(prodRes.data.products);
         } else {
           // List all collections
-          const res = await api.get('/collections');
-          if (res.data.success) setCollectionsList(res.data.collections);
+          const res = await api.get('/collections').catch(() => ({ data: { success: false } }));
+          if (res.data?.success && res.data.collections?.length > 0) setCollectionsList(res.data.collections);
         }
       } catch (err) {
-        console.error(err);
+        console.warn('Using local collection mock data');
       } finally {
         setLoading(false);
       }

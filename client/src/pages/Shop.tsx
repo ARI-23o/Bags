@@ -5,6 +5,7 @@ import api from '../services/api';
 import { Product, Category, Collection } from '../types';
 import { ProductCard } from '../components/product/ProductCard';
 import { SEOHelmet } from '../components/common/SEOHelmet';
+import { mockProducts, mockCategories, mockCollections } from '../services/mockData';
 
 export const Shop: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -17,11 +18,11 @@ export const Shop: React.FC = () => {
   const isSaleParam = searchParams.get('isSale') === 'true';
 
   // Data states
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [collections, setCollections] = useState<Collection[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [totalCount, setTotalCount] = useState(0);
+  const [products, setProducts] = useState<Product[]>(mockProducts);
+  const [categories, setCategories] = useState<Category[]>(mockCategories);
+  const [collections, setCollections] = useState<Collection[]>(mockCollections);
+  const [loading, setLoading] = useState(false);
+  const [totalCount, setTotalCount] = useState(mockProducts.length);
 
   // Filter states
   const [selectedCategory, setSelectedCategory] = useState<string>(categoryParam);
@@ -36,8 +37,22 @@ export const Shop: React.FC = () => {
   const [sortOption, setSortOption] = useState<string>('recommended');
 
   // Available filter options from backend
-  const [availableColors, setAvailableColors] = useState<{ name: string; hexCode: string }[]>([]);
-  const [availableMaterials, setAvailableMaterials] = useState<string[]>([]);
+  const [availableColors, setAvailableColors] = useState<{ name: string; hexCode: string }[]>([
+    { name: 'Siyah', hexCode: '#191817' },
+    { name: 'Vizon', hexCode: '#A79A8C' },
+    { name: 'Krem', hexCode: '#F4EFEA' },
+    { name: 'Taba', hexCode: '#8B4513' },
+    { name: 'Haki', hexCode: '#556B2F' },
+    { name: 'Gümüş', hexCode: '#C0C0C0' }
+  ]);
+  const [availableMaterials, setAvailableMaterials] = useState<string[]>([
+    'Birinci Sınıf Vegan Deri',
+    'Dokulu Suni Deri',
+    'Pürüzsüz Vegan Deri',
+    'Yumuşak Dokulu Suni Deri',
+    'Saten Kumaş & Kristal Taş İşleme',
+    'Su İtici İmpermeabl & Suni Deri Detaylar'
+  ]);
 
   // Mobile filter drawer
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
@@ -55,13 +70,13 @@ export const Shop: React.FC = () => {
     const fetchMetadata = async () => {
       try {
         const [catRes, colRes] = await Promise.all([
-          api.get('/categories'),
-          api.get('/collections')
+          api.get('/categories').catch(() => ({ data: { success: false } })),
+          api.get('/collections').catch(() => ({ data: { success: false } }))
         ]);
-        if (catRes.data.success) setCategories(catRes.data.categories);
-        if (colRes.data.success) setCollections(colRes.data.collections);
+        if (catRes.data?.success && catRes.data.categories?.length > 0) setCategories(catRes.data.categories);
+        if (colRes.data?.success && colRes.data.collections?.length > 0) setCollections(colRes.data.collections);
       } catch (err) {
-        console.error(err);
+        console.warn('Using local demo metadata');
       }
     };
     fetchMetadata();
@@ -89,17 +104,55 @@ export const Shop: React.FC = () => {
         if (searchParam) params.search = searchParam;
 
         const response = await api.get('/products', { params });
-        if (response.data.success) {
+        if (response.data?.success && response.data.products) {
           setProducts(response.data.products);
           setTotalCount(response.data.total);
 
           if (response.data.filterOptions) {
-            setAvailableColors(response.data.filterOptions.colors || []);
-            setAvailableMaterials(response.data.filterOptions.materials || []);
+            if (response.data.filterOptions.colors?.length > 0) setAvailableColors(response.data.filterOptions.colors);
+            if (response.data.filterOptions.materials?.length > 0) setAvailableMaterials(response.data.filterOptions.materials);
           }
+        } else {
+          throw new Error('Fallback to local filter');
         }
       } catch (error) {
-        console.error(error);
+        // Fallback local filtering for mock data
+        let filtered = [...mockProducts];
+        if (selectedCategory) {
+          filtered = filtered.filter(p => p.category?.slug === selectedCategory || (p.category as any) === selectedCategory);
+        }
+        if (selectedColor) {
+          filtered = filtered.filter(p => p.colors.some(c => c.name.toLowerCase() === selectedColor.toLowerCase()));
+        }
+        if (selectedMaterial) {
+          filtered = filtered.filter(p => p.material === selectedMaterial);
+        }
+        if (minPrice) {
+          filtered = filtered.filter(p => p.price >= Number(minPrice));
+        }
+        if (maxPrice) {
+          filtered = filtered.filter(p => p.price <= Number(maxPrice));
+        }
+        if (inStockOnly) {
+          filtered = filtered.filter(p => p.stock > 0);
+        }
+        if (newArrivalOnly) {
+          filtered = filtered.filter(p => p.isNewArrival);
+        }
+        if (saleOnly) {
+          filtered = filtered.filter(p => p.comparePrice && p.comparePrice > p.price);
+        }
+        if (searchParam) {
+          const s = searchParam.toLowerCase();
+          filtered = filtered.filter(p => p.title.toLowerCase().includes(s) || (p.description && p.description.toLowerCase().includes(s)));
+        }
+
+        if (sortOption === 'price-asc') filtered.sort((a, b) => a.price - b.price);
+        else if (sortOption === 'price-desc') filtered.sort((a, b) => b.price - a.price);
+        else if (sortOption === 'newest') filtered.sort((a, b) => (b.isNewArrival ? 1 : 0) - (a.isNewArrival ? 1 : 0));
+
+        setProducts(filtered);
+        setTotalCount(filtered.length);
       } finally {
         setLoading(false);
       }

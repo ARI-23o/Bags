@@ -4,26 +4,26 @@ import api from '../services/api';
 import { Product, Category } from '../types';
 import { ProductCard } from '../components/product/ProductCard';
 import { SEOHelmet } from '../components/common/SEOHelmet';
+import { mockCategories, mockProducts } from '../services/mockData';
 
 export const CategoryPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
-  const [category, setCategory] = useState<Category | null>(null);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [category, setCategory] = useState<Category | null>(() => mockCategories.find(c => c.slug === slug) || null);
+  const [products, setProducts] = useState<Product[]>(() => mockProducts.filter(p => p.category?.slug === slug || (p.category as any) === slug));
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     const fetchCategoryAndProducts = async () => {
-      setLoading(true);
       try {
         const [catRes, prodRes] = await Promise.all([
-          api.get(`/categories/${slug}`),
-          api.get(`/products?category=${slug}&limit=24`)
+          api.get(`/categories/${slug}`).catch(() => ({ data: { success: false } })),
+          api.get(`/products?category=${slug}&limit=24`).catch(() => ({ data: { success: false } }))
         ]);
 
-        if (catRes.data.success) setCategory(catRes.data.category);
-        if (prodRes.data.success) setProducts(prodRes.data.products);
+        if (catRes.data?.success && catRes.data.category) setCategory(catRes.data.category);
+        if (prodRes.data?.success && prodRes.data.products?.length > 0) setProducts(prodRes.data.products);
       } catch (err) {
-        console.error(err);
+        console.warn('Using local category mock data');
       } finally {
         setLoading(false);
       }

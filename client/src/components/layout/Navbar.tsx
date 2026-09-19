@@ -7,6 +7,7 @@ import { useSettings } from '../../context/SettingsContext';
 import api from '../../services/api';
 import { Category, Collection } from '../../types';
 import { MobileMenu } from './MobileMenu';
+import { mockCategories, mockCollections } from '../../services/mockData';
 
 export const Navbar: React.FC = () => {
   const { openCart, totalItemsCount } = useCart();
@@ -18,8 +19,8 @@ export const Navbar: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [collections, setCollections] = useState<Collection[]>([]);
+  const [categories, setCategories] = useState<Category[]>(mockCategories);
+  const [collections, setCollections] = useState<Collection[]>(mockCollections);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -33,13 +34,13 @@ export const Navbar: React.FC = () => {
     const fetchNavData = async () => {
       try {
         const [catRes, colRes] = await Promise.all([
-          api.get('/categories'),
-          api.get('/collections')
+          api.get('/categories').catch(() => ({ data: { success: false } })),
+          api.get('/collections').catch(() => ({ data: { success: false } }))
         ]);
-        if (catRes.data.success) setCategories(catRes.data.categories);
-        if (colRes.data.success) setCollections(colRes.data.collections);
+        if (catRes.data?.success && catRes.data.categories?.length > 0) setCategories(catRes.data.categories);
+        if (colRes.data?.success && colRes.data.collections?.length > 0) setCollections(colRes.data.collections);
       } catch (err) {
-        console.error(err);
+        console.warn('Using local navigation data');
       }
     };
     fetchNavData();

@@ -20,6 +20,7 @@ import { useWishlist } from '../context/WishlistContext';
 import { useSettings } from '../context/SettingsContext';
 import { ProductCard } from '../components/product/ProductCard';
 import { SEOHelmet } from '../components/common/SEOHelmet';
+import { mockProducts } from '../services/mockData';
 
 export const ProductDetail: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
@@ -59,10 +60,20 @@ export const ProductDetail: React.FC = () => {
 
           setSelectedImage(prod.primaryImage || (prod.images && prod.images[0]) || '');
         } else {
-          setError('Ürün bulunamadı.');
+          throw new Error('Fallback');
         }
-      } catch (err: any) {
-        setError(err.message || 'Ürün yüklenirken bir hata oluştu.');
+      } catch (err) {
+        const found = mockProducts.find(p => p.slug === slug || p._id === slug);
+        if (found) {
+          setProduct(found);
+          setRelatedProducts(mockProducts.filter(p => p._id !== found._id).slice(0, 4));
+          if (found.colors && found.colors.length > 0) {
+            setSelectedColor(found.colors[0]);
+          }
+          setSelectedImage(found.images[0] || '');
+        } else {
+          setError('Ürün bulunamadı');
+        }
       } finally {
         setLoading(false);
       }
