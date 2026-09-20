@@ -44,11 +44,6 @@ export const AdminLogin: React.FC = () => {
     }
   };
 
-  const handleFillDemo = () => {
-    setEmail('admin@nehircanta.com');
-    setPassword('admin123456');
-  };
-
   return (
     <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 font-sans text-slate-100">
       <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-sm p-8 shadow-2xl space-y-6">
@@ -112,23 +107,6 @@ export const AdminLogin: React.FC = () => {
             <ArrowRight className="w-4 h-4" />
           </button>
         </form>
-
-        {/* Demo Credentials Quick Fill Box */}
-        <div className="p-4 bg-slate-950 border border-slate-800/80 rounded-sm space-y-2 text-xs text-slate-400">
-          <div className="flex items-center justify-between">
-            <span className="font-semibold text-slate-200">Geliştirici Girişi:</span>
-            <button
-              onClick={handleFillDemo}
-              className="text-amber-400 hover:underline text-[11px] font-semibold uppercase"
-            >
-              Otomatik Doldur
-            </button>
-          </div>
-          <p className="font-mono text-[11px] text-slate-400">
-            E-posta: <strong>admin@nehircanta.com</strong><br />
-            Şifre: <strong>admin123456</strong>
-          </p>
-        </div>
 
         <div className="text-center pt-2">
           <Link
